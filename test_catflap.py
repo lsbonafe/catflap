@@ -12,6 +12,7 @@ from catflap import (
     md_escape,
     parse_devices,
     parse_foreground,
+    logcat_cmd,
     parse_line,
     parse_terms,
     split_last_term,
@@ -261,6 +262,20 @@ emulator-5554          device product:sdk_gphone64_arm64 model:sdk_gphone64_arm6
 
     def test_skips_offline_and_empty(self):
         self.assertEqual(parse_devices("List of devices attached\n\n"), [])
+
+
+class LogcatCmdTest(unittest.TestCase):
+    def test_default_buffers(self):
+        self.assertEqual(
+            logcat_cmd("emulator-5554"),
+            ["adb", "-s", "emulator-5554", "logcat", "-v", "threadtime"],
+        )
+
+    def test_explicit_buffers(self):
+        self.assertEqual(
+            logcat_cmd("abc", ["crash", "events"]),
+            ["adb", "-s", "abc", "logcat", "-v", "threadtime", "-b", "crash", "-b", "events"],
+        )
 
 
 class ParseForegroundTest(unittest.TestCase):

@@ -304,6 +304,23 @@ def avd_name(serial):
     return ""
 
 
+def logcat_cmd(serial, buffers=None):
+    """adb logcat command line; buffers=None streams adb's default (main+system)."""
+    cmd = ["adb", "-s", serial, "logcat", "-v", "threadtime"]
+    for b in buffers or ():
+        cmd += ["-b", b]
+    return cmd
+
+
+BUFFER_CHOICES = [
+    ("main + system (default)", None),
+    ("crash — crash dumps only", ["crash"]),
+    ("events — system events (activity starts, GC…)", ["events"]),
+    ("radio — telephony/modem", ["radio"]),
+    ("everything — main, system, crash, events", ["main", "system", "crash", "events"]),
+]
+
+
 def list_devices():
     try:
         out = subprocess.run(
@@ -722,7 +739,7 @@ class LogPane(RichLog):
         return selection.extract(text), "\n"
 
 
-FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Export", "Device", "ADB", "Filtering", "Quit"]
+FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Export", "Device", "Buffer", "ADB", "Filtering", "Quit"]
 
 
 class OrderedFooter(Footer):
@@ -874,6 +891,7 @@ class Catflap(App):
         Binding("ctrl+g", "jump_crash", "Crash", priority=True),
         Binding("ctrl+e", "export_menu", "Export", priority=True),
         Binding("ctrl+d", "pick_device", "Device", priority=True),
+        Binding("ctrl+b", "pick_buffer", "Buffer", priority=True),
         Binding("ctrl+a", "adb_menu", "ADB", priority=True),
         Binding("f1", "help", "Filtering", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
@@ -891,6 +909,11 @@ class Catflap(App):
                 "📱 Clear device buffer",
                 "adb logcat -c on the device, plus the local view",
                 self.action_clear_device,
+            ),
+            SystemCommand(
+                "📚 Switch log buffer",
+                "Stream crash, events, radio, or the default main+system buffers",
+                self.action_pick_buffer,
             ),
             SystemCommand(
                 "📱 Filter on foreground app",
@@ -1040,6 +1063,8 @@ class Catflap(App):
         self.min_level = "V"
         self.level_exact = False
         self.foreground_pkg = None
+        self.log_buffers = None  # None = adb default (main+system)
+        self.buffer_label = ""
         self._search_active = False
         self._search_autopause = False
         self._search_entries = []
@@ -1144,12 +1169,13 @@ class Catflap(App):
     def _logcat_reader(self):
         while not self._stop.is_set():
             serial = self.serial
+            buffers = self.log_buffers
             if serial is None:
                 time.sleep(0.5)
                 continue
             try:
                 proc = subprocess.Popen(
-                    ["adb", "-s", serial, "logcat", "-v", "threadtime"],
+                    logcat_cmd(serial, buffers),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     text=True,
@@ -1158,13 +1184,17 @@ class Catflap(App):
                 self._proc = proc
                 self._device_ok = True
                 for line in proc.stdout:
-                    if self._stop.is_set() or self.serial != serial:
+                    if (
+                        self._stop.is_set()
+                        or self.serial != serial
+                        or self.log_buffers != buffers
+                    ):
                         break
                     self.queue.put(line.rstrip("\n"))
             except Exception:
                 pass
             self._device_ok = False
-            if not self._stop.is_set() and self.serial == serial:
+            if not self._stop.is_set() and self.serial == serial and self.log_buffers == buffers:
                 time.sleep(2)  # device gone — retry
 
     def _pid_mapper(self):
@@ -1331,6 +1361,37 @@ class Catflap(App):
 
         self.push_screen(DevicePickerScreen(devices), done)
 
+    def action_pick_buffer(self):
+        if self.serial is None:
+            self.notify("No device selected.", severity="warning")
+            return
+        labels = [
+            ("✓ " if buffers == self.log_buffers else "  ") + label
+            for label, buffers in BUFFER_CHOICES
+        ]
+
+        def done(choice):
+            if not choice:
+                return
+            label, buffers = BUFFER_CHOICES[labels.index(choice)]
+            self._set_buffers(buffers, label)
+
+        self.push_screen(PickListScreen("Log buffer", labels), done)
+
+    def _set_buffers(self, buffers, label):
+        if buffers == self.log_buffers:
+            return
+        self.log_buffers = buffers
+        self.buffer_label = label.split(" — ")[0].split(" (")[0]
+        self.action_clear_log()  # different stream — do not mix
+        if self._proc:
+            try:
+                self._proc.kill()  # reader respawns with the new -b flags
+            except Exception:
+                pass
+        self.notify(f"Streaming buffer: {self.buffer_label}")
+        self._update_status()
+
     def action_pick_device(self):
         devices = list_devices()
         if not devices:
@@ -1344,6 +1405,8 @@ class Catflap(App):
         else:
             name = self.device_model or self.serial
             device = f"device: {name}" if self._device_ok else f"device: {name} (offline)"
+        if self.log_buffers:
+            device += f"   |   buffer: {self.buffer_label}"
         clipped = f" (last {DISPLAY_MAX} displayed)" if self.shown > DISPLAY_MAX else ""
         if self.paused:
             # no live counters while paused: a static screen is what lets the
