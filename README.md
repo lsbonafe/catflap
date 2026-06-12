@@ -1,6 +1,6 @@
-# logcat-tui
+# catflap 🐈🚪
 
-A terminal UI for Android logcat with Android Studio-grade filtering — live, fast, and keyboard-friendly. Built with [Textual](https://textual.textualize.io/).
+The little door your Android logs come through. A terminal UI for logcat with Android Studio-grade filtering — live, fast, and keyboard-friendly. Built with [Textual](https://textual.textualize.io/).
 
 ![](https://img.shields.io/badge/python-3.9%2B-blue) ![](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
@@ -25,8 +25,8 @@ A terminal UI for Android logcat with Android Studio-grade filtering — live, f
 ## Install
 
 ```bash
-git clone https://github.com/lbonafe/logcat-tui.git
-cd logcat-tui
+git clone https://github.com/lbonafe/catflap.git
+cd catflap
 python3 -m venv .venv
 .venv/bin/pip install textual
 ```
@@ -34,13 +34,13 @@ python3 -m venv .venv
 Optionally add an alias:
 
 ```bash
-alias logcat-tui="/path/to/logcat-tui/logcat-tui"
+alias catflap="/path/to/catflap/catflap"
 ```
 
 ## Run
 
 ```bash
-./logcat-tui
+./catflap
 ```
 
 ## Keys
@@ -74,4 +74,4 @@ Press `F1` inside the app for the full cheatsheet, including how to copy text fr
 .venv/bin/python -m unittest discover    # 58 tests: unit + headless UI integration
 ```
 
-State is persisted at `~/.config/logcat-tui/state.json` (palette → "Restore factory defaults" wipes it).
+State is persisted at `~/.config/catflap/state.json` (palette → "Restore factory defaults" wipes it).

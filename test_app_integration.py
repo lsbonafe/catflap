@@ -5,13 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import logcat_tui
-from logcat_tui import (
+import catflap
+from catflap import (
     DevicePickerScreen,
     ExportDirScreen,
     HelpScreen,
     Input,
-    LogcatTUI,
+    Catflap,
     PickListScreen,
     QueryHighlighter,
     TextViewerScreen,
@@ -21,15 +21,15 @@ from logcat_tui import (
 def make_app():
     # fully isolate from adb: no devices -> no reader/mapper activity,
     # tests feed lines straight into app.queue
-    logcat_tui.list_devices = lambda: []
-    app = LogcatTUI()
+    catflap.list_devices = lambda: []
+    app = Catflap()
     app._auto_picked = True
     return app
 
 
 def isolate_state():
     tmp = Path(tempfile.mkdtemp()) / "state.json"
-    logcat_tui.STATE_PATH = tmp
+    catflap.STATE_PATH = tmp
     return tmp
 
 
@@ -329,7 +329,7 @@ class AdbMenuFlow(unittest.IsolatedAsyncioTestCase):
             self.assertNotIsInstance(app.screen, PickListScreen)
 
     async def test_target_picker_filters_then_ops(self):
-        from logcat_tui import FilterPickScreen
+        from catflap import FilterPickScreen
         isolate_state()
         app = make_app()
         async with app.run_test() as pilot:

@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime
 
-from logcat_tui import (
+from catflap import (
     crash_block,
     export_filename,
     export_markdown,
@@ -163,18 +163,18 @@ class LevelTest(unittest.TestCase):
         self.assertTrue(level_at_least("S", "E"))
 
     def test_exact_mode(self):
-        from logcat_tui import level_matches
+        from catflap import level_matches
         self.assertTrue(level_matches("I", "I", exact=True))
         self.assertFalse(level_matches("W", "I", exact=True))
         self.assertFalse(level_matches("V", "I", exact=True))
 
     def test_exact_e_includes_fatal(self):
-        from logcat_tui import level_matches
+        from catflap import level_matches
         self.assertTrue(level_matches("F", "E", exact=True))
         self.assertFalse(level_matches("W", "E", exact=True))
 
     def test_default_mode_is_threshold(self):
-        from logcat_tui import level_matches
+        from catflap import level_matches
         self.assertTrue(level_matches("W", "I"))
         self.assertFalse(level_matches("D", "I"))
 
@@ -235,7 +235,7 @@ class ParsePermissionsTest(unittest.TestCase):
     """
 
     def test_parses_granted_state(self):
-        from logcat_tui import parse_permissions
+        from catflap import parse_permissions
         perms = parse_permissions(self.OUTPUT)
         self.assertEqual(perms["android.permission.CAMERA"], False)
         self.assertEqual(perms["android.permission.ACCESS_FINE_LOCATION"], True)

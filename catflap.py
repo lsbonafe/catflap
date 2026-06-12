@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""logcat-tui — live adb logcat viewer with dynamic filters, Android Studio style.
+"""catflap — live adb logcat viewer with dynamic filters, Android Studio style.
 
 Three input boxes (package, tag, message) re-filter the stream as you type.
 Filter syntax: case-insensitive substring; alternatives joined with " OR ",
@@ -197,10 +197,18 @@ def ensure_dir(path_str):
         return None
 
 
-STATE_PATH = Path.home() / ".config" / "logcat-tui" / "state.json"
+STATE_PATH = Path.home() / ".config" / "catflap" / "state.json"
 
 
 def load_state():
+    if not STATE_PATH.exists() and STATE_PATH.parent.name == "catflap":
+        legacy = Path.home() / ".config" / "logcat-tui" / "state.json"
+        if legacy.exists():
+            try:
+                STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                STATE_PATH.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+            except Exception:
+                pass
     try:
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -779,8 +787,8 @@ class DevicePickerScreen(ModalScreen):
         self.dismiss(None)
 
 
-class LogcatTUI(App):
-    TITLE = "logcat-tui"
+class Catflap(App):
+    TITLE = "catflap"
 
     CSS = """
     Screen { layers: base overlay; }
@@ -1698,7 +1706,7 @@ class LogcatTUI(App):
         elif choice == "🎬 Start screen record":
             self._record_proc = subprocess.Popen(
                 ["adb", "-s", self.serial, "shell", "screenrecord", "--time-limit", "180",
-                 "/sdcard/logcat_tui_rec.mp4"],
+                 "/sdcard/catflap_rec.mp4"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             self.notify("Recording… (^a → Stop to save, 3 min max)")
@@ -1779,11 +1787,11 @@ class LogcatTUI(App):
                 time.sleep(1)  # let the device finalize the mp4
                 path = d / f"screenrecord_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
                 r = subprocess.run(
-                    ["adb", "-s", serial, "pull", "/sdcard/logcat_tui_rec.mp4", str(path)],
+                    ["adb", "-s", serial, "pull", "/sdcard/catflap_rec.mp4", str(path)],
                     capture_output=True, text=True, timeout=60,
                 )
                 subprocess.run(
-                    ["adb", "-s", serial, "shell", "rm", "-f", "/sdcard/logcat_tui_rec.mp4"],
+                    ["adb", "-s", serial, "shell", "rm", "-f", "/sdcard/catflap_rec.mp4"],
                     capture_output=True, timeout=10,
                 )
                 if r.returncode == 0:
@@ -1892,4 +1900,4 @@ class LogcatTUI(App):
 
 
 if __name__ == "__main__":
-    LogcatTUI().run()
+    Catflap().run()
