@@ -806,6 +806,7 @@ class Catflap(App):
     ClearButton:hover { color: $text; }
     #statusbar { height: 1; }
     #status { width: 1fr; height: 1; color: $text 60%; padding: 0 1; }
+    #brand { width: auto; height: 1; padding: 0 1; color: $accent; text-style: bold; }
     #minlevel { width: auto; height: 3; padding: 1 2; color: $text 60%; }
     #minlevel:hover { color: $text; }
     #minlevel.levelactive { color: $accent; text-style: bold; }
@@ -1004,6 +1005,7 @@ class Catflap(App):
         yield LogPane(highlight=False, markup=False, wrap=False, max_lines=DISPLAY_MAX, id="log")
         with Horizontal(id="statusbar"):
             yield Static("starting…", id="status")
+            yield Static("🐈 𝒸𝒶𝓉𝒻𝓁𝒶𝓅", id="brand")
         yield OrderedFooter()
         yield OptionList(id="suggest")
         yield OptionList(id="levelmenu")
