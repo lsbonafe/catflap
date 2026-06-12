@@ -223,6 +223,25 @@ class ExportRawTest(unittest.TestCase):
         )
 
 
+class ParsePermissionsTest(unittest.TestCase):
+    OUTPUT = """
+    requested permissions:
+      android.permission.INTERNET
+    install permissions:
+      android.permission.INTERNET: granted=true
+    runtime permissions:
+      android.permission.CAMERA: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED]
+      android.permission.ACCESS_FINE_LOCATION: granted=true, flags=[ USER_SET]
+    """
+
+    def test_parses_granted_state(self):
+        from logcat_tui import parse_permissions
+        perms = parse_permissions(self.OUTPUT)
+        self.assertEqual(perms["android.permission.CAMERA"], False)
+        self.assertEqual(perms["android.permission.ACCESS_FINE_LOCATION"], True)
+        self.assertEqual(perms["android.permission.INTERNET"], True)
+
+
 class ParseDevicesTest(unittest.TestCase):
     OUTPUT = """List of devices attached
 R3CX10ABCDE            device usb:1-1 product:e3qxxx model:SM_S928B device:e3q transport_id:1

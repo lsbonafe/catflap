@@ -318,6 +318,47 @@ class PauseBindingFlow(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.paused)
 
 
+class AdbMenuFlow(unittest.IsolatedAsyncioTestCase):
+    async def test_requires_device(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.action_adb_menu()
+            await pilot.pause(0.2)
+            self.assertNotIsInstance(app.screen, PickListScreen)
+
+    async def test_target_picker_filters_then_ops(self):
+        from logcat_tui import FilterPickScreen
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.serial = "FAKE"
+            app.pid_names = {"1": "com.teads.sample", "2": "com.other.app", "3": "kworker"}
+            await pilot.press("ctrl+a")
+            await pilot.pause(0.2)
+            self.assertIsInstance(app.screen, FilterPickScreen)
+            # only dotted names offered, sorted
+            self.assertEqual(app.screen._all, ["com.other.app", "com.teads.sample"])
+            # type to filter, enter selects the first match
+            await pilot.press(*"teads")
+            await pilot.pause(0.2)
+            self.assertEqual(app.screen._current, ["com.teads.sample"])
+            await pilot.press("enter")
+            await pilot.pause(0.3)
+            self.assertEqual(app._adb_target, "com.teads.sample")
+            self.assertIsInstance(app.screen, PickListScreen)  # ops menu
+            self.assertTrue(any("Start app" in o for o in app.screen._options))
+            await pilot.press("escape")
+            await pilot.pause(0.2)
+            # second open goes straight to ops (target remembered)
+            await pilot.press("ctrl+a")
+            await pilot.pause(0.2)
+            self.assertTrue(any("📦 Target" in o for o in app.screen._options))
+            await pilot.press("escape")
+
+
 class Screens(unittest.IsolatedAsyncioTestCase):
     async def test_device_picker_and_quit_binding(self):
         isolate_state()

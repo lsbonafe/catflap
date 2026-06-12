@@ -240,6 +240,16 @@ def suggest(candidates, current_term, limit=8):
     return out
 
 
+def parse_permissions(dumpsys_output):
+    """dumpsys package output -> {permission_name: granted} for runtime perms."""
+    perms = {}
+    for name, granted in re.findall(
+        r"([\w.]*\.permission\.[\w.]+): granted=(true|false)", dumpsys_output
+    ):
+        perms.setdefault(name, granted == "true")
+    return perms
+
+
 def parse_devices(adb_devices_output):
     """Parse `adb devices -l` output -> [(serial, model)] for online devices."""
     devices = []
@@ -526,6 +536,104 @@ class ExportDirScreen(ModalScreen):
         self.dismiss(None)
 
 
+class FilterPickScreen(ModalScreen):
+    """Option picker with a live filter box on top (same feel as the main filters).
+    Dismisses with the chosen string or None."""
+
+    CSS = """
+    FilterPickScreen { align: center middle; }
+    #fpick-box {
+        width: 64; height: auto; max-height: 24; padding: 1 2;
+        background: $surface; border: round $accent;
+    }
+    #fpick-title { padding-bottom: 1; text-style: bold; }
+    #fpick-list { height: auto; max-height: 14; }
+    """
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("ctrl+q", "app.quit", "Quit"),
+    ]
+
+    def __init__(self, title, options, placeholder="type to filter…"):
+        super().__init__()
+        self._title = title
+        self._all = options
+        self._current = options
+        self._placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="fpick-box"):
+            yield Label(self._title, id="fpick-title")
+            yield Input(placeholder=self._placeholder, id="fpick-input")
+            yield OptionList(id="fpick-list")
+
+    def on_mount(self):
+        self.query_one("#fpick-input", Input).cursor_blink = False
+        self._populate(self._all)
+        self.set_focus(self.query_one("#fpick-input"))
+
+    def _populate(self, items):
+        self._current = items
+        olist = self.query_one("#fpick-list", OptionList)
+        olist.clear_options()
+        olist.add_options([Option(o, id=str(i)) for i, o in enumerate(items)])
+
+    def on_input_changed(self, event: Input.Changed):
+        term = event.value.strip().lower()
+        self._populate([o for o in self._all if term in o.lower()])
+
+    def on_input_submitted(self, event: Input.Submitted):
+        if self._current:
+            self.dismiss(self._current[0])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
+        self.dismiss(self._current[int(event.option.id)])
+
+    def on_key(self, event):
+        if event.key == "down" and self.focused is self.query_one("#fpick-input"):
+            olist = self.query_one("#fpick-list", OptionList)
+            if olist.option_count:
+                self.set_focus(olist)
+                olist.highlighted = 0
+            event.stop()
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
+class TextPromptScreen(ModalScreen):
+    """Generic one-line text prompt; dismisses with the value or None."""
+
+    CSS = """
+    TextPromptScreen { align: center middle; }
+    #prompt-box {
+        width: 70; height: auto; padding: 1 2;
+        background: $surface; border: round $accent;
+    }
+    #prompt-title { padding-bottom: 1; text-style: bold; }
+    """
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(self, title, initial="", placeholder=""):
+        super().__init__()
+        self._title = title
+        self._initial = initial
+        self._placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="prompt-box"):
+            yield Label(self._title, id="prompt-title")
+            yield Input(value=self._initial, placeholder=self._placeholder, id="prompt-input")
+
+    def on_input_submitted(self, event: Input.Submitted):
+        self.dismiss(event.value.strip() or None)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
 class SavePresetScreen(ModalScreen):
     """Asks for a preset name; dismisses with it or None."""
 
@@ -571,7 +679,7 @@ class LogPane(RichLog):
         return selection.extract(text), "\n"
 
 
-FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Export", "Device", "Filtering", "Quit"]
+FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Export", "Device", "ADB", "Filtering", "Quit"]
 
 
 class OrderedFooter(Footer):
@@ -716,6 +824,7 @@ class LogcatTUI(App):
         Binding("ctrl+g", "jump_crash", "Crash", priority=True),
         Binding("ctrl+e", "export_menu", "Export", priority=True),
         Binding("ctrl+d", "pick_device", "Device", priority=True),
+        Binding("ctrl+a", "adb_menu", "ADB", priority=True),
         Binding("f1", "help", "Filtering", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
@@ -732,6 +841,11 @@ class LogcatTUI(App):
                 "📱 Clear device buffer",
                 "adb logcat -c on the device, plus the local view",
                 self.action_clear_device,
+            ),
+            SystemCommand(
+                "🤖 ADB operations",
+                "Start/kill/clear/uninstall the target app, permissions, deep links, screenshots",
+                self.action_adb_menu,
             ),
             # debugging
             SystemCommand(
@@ -860,6 +974,9 @@ class LogcatTUI(App):
         self.paused = False
         self._pending_lines = 0
         self.crashes = []
+        self._adb_target = None
+        self._record_proc = None
+        self._last_deeplink = ""
         self.min_level = "V"
         self.level_exact = False
         self._preferred_serial = None
@@ -1454,6 +1571,229 @@ class LogcatTUI(App):
         self._state["wrap"] = self.log_widget.wrap
         self._refresh_view()
         self.notify(f"Line wrap {'on' if self.log_widget.wrap else 'off'}.")
+
+    # ---- adb operations ---------------------------------------------------------
+
+    def _adb_async(self, args, success_msg, then=None, timeout=30):
+        """Run an adb command off the UI thread; toast the outcome."""
+        serial = self.serial
+
+        def work():
+            try:
+                r = subprocess.run(
+                    ["adb", "-s", serial, *args],
+                    capture_output=True, text=True, timeout=timeout,
+                )
+                out = f"{r.stdout}\n{r.stderr}"
+                ok = r.returncode == 0 and "Failure" not in out and "Error" not in out
+                msg = success_msg if ok else (out.strip().splitlines() or ["adb failed"])[-1]
+                self.call_from_thread(self._adb_done, ok, msg, then)
+            except Exception as ex:
+                self.call_from_thread(self.notify, f"adb failed: {ex}", severity="error")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _adb_done(self, ok, msg, then):
+        self.notify(msg, severity="information" if ok else "error")
+        if ok and then:
+            then()
+
+    def action_adb_menu(self):
+        if self.serial is None:
+            self.notify("No device selected.", severity="warning")
+            return
+        if self._adb_target is None:
+            self._pick_adb_target()
+        else:
+            self._open_adb_ops()
+
+    def _pick_adb_target(self):
+        candidates = sorted({n for n in self.pid_names.values() if "." in n})
+        if self.f_pkg:
+            matching = [c for c in candidates if matches(c, self.f_pkg)]
+            candidates = matching + [c for c in candidates if c not in matching]
+        if not candidates:
+            self.notify("No processes mapped yet — wait a moment.", severity="warning")
+            return
+
+        def done(pkg):
+            if pkg:
+                self._adb_target = pkg
+                self._open_adb_ops()
+
+        self.push_screen(FilterPickScreen("Target app", candidates, "filter packages…"), done)
+
+    def _open_adb_ops(self):
+        pkg = self._adb_target
+        recording = self._record_proc is not None
+        ops = [
+            f"📦 Target: {pkg}  (change…)",
+            "▶ Start app",
+            "🔄 Restart app",
+            "⛔ Kill app (force-stop)",
+            "💀 Simulate process death",
+            "🧹 Clear app data",
+            "🧹 Clear app data & restart",
+            "🗑 Uninstall app",
+            "🔓 Grant permission…",
+            "🔒 Revoke permission…",
+            "♻️ Reset all permissions (all apps)",
+            "🔗 Open deep link…",
+            "📸 Screenshot",
+            "⏹ Stop recording & save" if recording else "🎬 Start screen record",
+        ]
+        self.push_screen(PickListScreen(f"ADB — {pkg}", ops), self._run_adb_op)
+
+    def _run_adb_op(self, choice):
+        if not choice:
+            return
+        pkg = self._adb_target
+        start_cmd = ["shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1"]
+        if choice.startswith("📦"):
+            self._adb_target = None
+            self._pick_adb_target()
+        elif choice == "▶ Start app":
+            self._adb_async(start_cmd, f"Started {pkg}")
+        elif choice == "🔄 Restart app":
+            self._adb_async(
+                ["shell", "am", "force-stop", pkg], f"Restarted {pkg}",
+                then=lambda: self._adb_async(start_cmd, f"Started {pkg}"),
+            )
+        elif choice == "⛔ Kill app (force-stop)":
+            self._adb_async(["shell", "am", "force-stop", pkg], f"Killed {pkg}")
+        elif choice == "💀 Simulate process death":
+            self._adb_async(["shell", "am", "kill", pkg], f"Background-killed {pkg}")
+        elif choice == "🧹 Clear app data":
+            self._confirm_adb(f"Clear all data of {pkg}?", ["shell", "pm", "clear", pkg], f"Cleared {pkg} data")
+        elif choice == "🧹 Clear app data & restart":
+            self._confirm_adb(
+                f"Clear all data of {pkg} and restart?",
+                ["shell", "pm", "clear", pkg], f"Cleared {pkg} data",
+                then=lambda: self._adb_async(start_cmd, f"Started {pkg}"),
+            )
+        elif choice == "🗑 Uninstall app":
+            self._confirm_adb(f"Uninstall {pkg}?", ["uninstall", pkg], f"Uninstalled {pkg}")
+        elif choice == "🔓 Grant permission…":
+            self._pick_permission(granted=False)
+        elif choice == "🔒 Revoke permission…":
+            self._pick_permission(granted=True)
+        elif choice.startswith("♻️"):
+            self._confirm_adb(
+                "Reset runtime permissions of ALL apps?",
+                ["shell", "pm", "reset-permissions"], "All permissions reset",
+            )
+        elif choice == "🔗 Open deep link…":
+            def done(url):
+                if url:
+                    self._last_deeplink = url
+                    self._adb_async(
+                        ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url],
+                        f"Opened {url}",
+                    )
+            self.push_screen(
+                TextPromptScreen("Deep link URL", self._last_deeplink, "scheme://host/path"), done
+            )
+        elif choice == "📸 Screenshot":
+            self._export_dir_or_prompt(self._take_screenshot)
+        elif choice == "🎬 Start screen record":
+            self._record_proc = subprocess.Popen(
+                ["adb", "-s", self.serial, "shell", "screenrecord", "--time-limit", "180",
+                 "/sdcard/logcat_tui_rec.mp4"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self.notify("Recording… (^a → Stop to save, 3 min max)")
+        elif choice.startswith("⏹"):
+            self._export_dir_or_prompt(self._stop_recording)
+
+    def _confirm_adb(self, question, args, success_msg, then=None):
+        def done(answer):
+            if answer == "Yes":
+                self._adb_async(args, success_msg, then=then)
+
+        self.push_screen(PickListScreen(question, ["Yes", "Cancel"]), done)
+
+    def _pick_permission(self, granted):
+        pkg = self._adb_target
+        serial = self.serial
+
+        def work():
+            try:
+                out = subprocess.run(
+                    ["adb", "-s", serial, "shell", "dumpsys", "package", pkg],
+                    capture_output=True, text=True, timeout=15,
+                ).stdout
+                perms = sorted(p for p, g in parse_permissions(out).items() if g == granted)
+                self.call_from_thread(self._show_permissions, perms, granted)
+            except Exception as ex:
+                self.call_from_thread(self.notify, f"adb failed: {ex}", severity="error")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_permissions(self, perms, granted):
+        verb = "revoke" if granted else "grant"
+        if not perms:
+            self.notify(f"Nothing to {verb}.", severity="warning")
+            return
+
+        def done(perm):
+            if perm:
+                self._adb_async(
+                    ["shell", "pm", verb, self._adb_target, perm],
+                    f"{verb.capitalize()}ed {perm.rsplit('.', 1)[-1]}",
+                )
+
+        self.push_screen(PickListScreen(f"Permission to {verb}", perms), done)
+
+    def _take_screenshot(self, d):
+        serial = self.serial
+
+        def work():
+            try:
+                r = subprocess.run(
+                    ["adb", "-s", serial, "exec-out", "screencap", "-p"],
+                    capture_output=True, timeout=20,
+                )
+                if r.returncode == 0 and r.stdout.startswith(b"\x89PNG"):
+                    path = d / f"screenshot_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png"
+                    path.write_bytes(r.stdout)
+                    self.call_from_thread(self.notify, f"Saved {path.name}")
+                else:
+                    self.call_from_thread(self.notify, "Screenshot failed.", severity="error")
+            except Exception as ex:
+                self.call_from_thread(self.notify, f"adb failed: {ex}", severity="error")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _stop_recording(self, d):
+        serial = self.serial
+        proc, self._record_proc = self._record_proc, None
+
+        def work():
+            try:
+                subprocess.run(
+                    ["adb", "-s", serial, "shell", "killall", "-INT", "screenrecord"],
+                    capture_output=True, timeout=10,
+                )
+                if proc:
+                    proc.wait(timeout=10)
+                time.sleep(1)  # let the device finalize the mp4
+                path = d / f"screenrecord_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
+                r = subprocess.run(
+                    ["adb", "-s", serial, "pull", "/sdcard/logcat_tui_rec.mp4", str(path)],
+                    capture_output=True, text=True, timeout=60,
+                )
+                subprocess.run(
+                    ["adb", "-s", serial, "shell", "rm", "-f", "/sdcard/logcat_tui_rec.mp4"],
+                    capture_output=True, timeout=10,
+                )
+                if r.returncode == 0:
+                    self.call_from_thread(self.notify, f"Saved {path.name}")
+                else:
+                    self.call_from_thread(self.notify, "Could not pull the recording.", severity="error")
+            except Exception as ex:
+                self.call_from_thread(self.notify, f"adb failed: {ex}", severity="error")
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ---- presets & persistence -------------------------------------------------
 
