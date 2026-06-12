@@ -258,6 +258,22 @@ def parse_permissions(dumpsys_output):
     return perms
 
 
+FOREGROUND_RES = [
+    # covers topResumedActivity= (10+), ResumedActivity: (15+), mResumedActivity: (pre-10)
+    re.compile(r"ResumedActivity[=:]\s*ActivityRecord\{\S+ u\d+ ([\w.]+)/"),
+    re.compile(r"mFocusedApp=ActivityRecord\{\S+ u\d+ ([\w.]+)/"),
+]
+
+
+def parse_foreground(dumpsys_output):
+    """dumpsys activity output -> foreground package name, or None."""
+    for rx in FOREGROUND_RES:
+        m = rx.search(dumpsys_output)
+        if m:
+            return m.group(1)
+    return None
+
+
 def parse_devices(adb_devices_output):
     """Parse `adb devices -l` output -> [(serial, model)] for online devices."""
     devices = []
@@ -370,6 +386,22 @@ class ClearButton(Static):
         box = self.app.query_one(f"#{self.target_id}", Input)
         box.value = ""
         self.app.set_focus(box)
+
+
+class DropdownArrow(Static):
+    """The ▼ at the right end of the package box; toggles the package dropdown."""
+
+    def __init__(self, **kwargs):
+        super().__init__("▼", **kwargs)
+
+    def on_click(self):
+        app = self.app
+        box = app.query_one("#pkg", Input)
+        if app.suggest_list.display and app._suggest_target is box:
+            app._hide_suggest()
+        else:
+            app.set_focus(box)
+            app._update_suggest(box)
 
 
 class PaletteClose(Static):
@@ -799,11 +831,13 @@ class Catflap(App):
     }
     .inputwrap:focus-within { border: tall $accent; }
     .inputwrap Input {
-        width: 1fr; height: 1; border: none; padding: 0 1;
+        width: 1fr; min-width: 16; height: 1; border: none; padding: 0 1;
         background: transparent;
     }
     ClearButton { width: 3; height: 1; content-align: center middle; color: $text 50%; }
     ClearButton:hover { color: $text; }
+    DropdownArrow { width: 3; height: 1; content-align: center middle; color: $text 50%; }
+    DropdownArrow:hover { color: $text; }
     #statusbar { height: 1; }
     #status { width: 1fr; height: 1; color: $text 60%; padding: 0 1; }
     #brand { width: auto; height: 1; padding: 0 1; color: $accent; text-style: bold; }
@@ -850,6 +884,11 @@ class Catflap(App):
                 "📱 Clear device buffer",
                 "adb logcat -c on the device, plus the local view",
                 self.action_clear_device,
+            ),
+            SystemCommand(
+                "📱 Filter on foreground app",
+                "Set the package filter to the app currently on screen",
+                self.adopt_foreground,
             ),
             SystemCommand(
                 "🤖 ADB operations",
@@ -988,6 +1027,7 @@ class Catflap(App):
         self._last_deeplink = ""
         self.min_level = "V"
         self.level_exact = False
+        self.foreground_pkg = None
         self._preferred_serial = None
         self._state = {}
 
@@ -1001,6 +1041,8 @@ class Catflap(App):
                 with Horizontal(classes="inputwrap"):
                     yield Input(placeholder=placeholder, id=box_id)
                     yield ClearButton(box_id, id=f"clear-{box_id}")
+                    if box_id == "pkg":
+                        yield DropdownArrow(id="pkg-arrow")
             yield LevelChip("Level ≥ V", id="minlevel")
         yield LogPane(highlight=False, markup=False, wrap=False, max_lines=DISPLAY_MAX, id="log")
         with Horizontal(id="statusbar"):
@@ -1056,6 +1098,7 @@ class Catflap(App):
         threading.Thread(target=self._logcat_reader, daemon=True).start()
         threading.Thread(target=self._pid_mapper, daemon=True).start()
         threading.Thread(target=self._device_watcher, daemon=True).start()
+        threading.Thread(target=self._foreground_watcher, daemon=True).start()
         self.set_interval(0.1, self._drain)
         self.set_interval(1.0, self._update_status)
 
@@ -1128,6 +1171,42 @@ class Catflap(App):
             except Exception:
                 pass
             time.sleep(3)
+
+    def _foreground_watcher(self):
+        while not self._stop.is_set():
+            serial = self.serial
+            if serial is None:
+                time.sleep(0.5)
+                continue
+            try:
+                out = subprocess.run(
+                    ["adb", "-s", serial, "shell", "dumpsys", "activity", "activities"],
+                    capture_output=True, text=True, timeout=10,
+                ).stdout
+                pkg = parse_foreground(out)
+                if pkg != self.foreground_pkg and self.serial == serial:
+                    self.foreground_pkg = pkg
+                    self.call_from_thread(self._on_foreground_change)
+            except Exception:
+                pass
+            time.sleep(2)
+
+    def _on_foreground_change(self):
+        # refresh an open package dropdown so its pinned entry tracks the device
+        box = self.query_one("#pkg", Input)
+        if box.has_focus:
+            self._update_suggest(box)
+
+    def adopt_foreground(self):
+        pkg = self.foreground_pkg
+        if not pkg:
+            self.notify("No foreground app detected yet.", severity="warning")
+            return
+        box = self.query_one("#pkg", Input)
+        if box.value.strip() == pkg:
+            return
+        box.value = pkg
+        box.cursor_position = len(pkg)
 
     # ---- filtering -----------------------------------------------------------
 
@@ -1207,6 +1286,7 @@ class Catflap(App):
         self.serial = serial
         self.device_model = model
         self.pid_names = {}
+        self.foreground_pkg = None
         if switching:
             self.action_clear_log()  # do not mix lines from two devices
         if old_proc:
@@ -1311,6 +1391,11 @@ class Catflap(App):
         if term.startswith("NOT "):
             term = term[4:]
         values = suggest(self._candidates_for(input_widget.id), term)
+        fg = self.foreground_pkg if input_widget.id == "pkg" else None
+        t = term.strip().lower()
+        # pin the device's foreground app on top of the package dropdown
+        if fg and (not t or t in fg.lower()) and t != fg.lower():
+            values = ([fg] + [v for v in values if v != fg])[:8]
         if not values or not input_widget.has_focus:
             self._hide_suggest()
             return
@@ -1318,11 +1403,22 @@ class Catflap(App):
         self._suggest_values = values
         self.suggest_list.clear_options()
         self.suggest_list.add_options(
-            [Option(v, id=str(i)) for i, v in enumerate(values)]
+            [
+                Option(
+                    Text.assemble("📱 ", v, ("  foreground", "dim italic"))
+                    if v == fg
+                    else Text(v),
+                    id=str(i),
+                )
+                for i, v in enumerate(values)
+            ]
         )
-        region = input_widget.region
-        self.suggest_list.styles.offset = (region.x, 3)
-        self.suggest_list.styles.width = region.width
+        # size to the whole input box, never below a usable floor — a squeezed
+        # input (e.g. foreground chip showing) would crash rich's wrapping at width 0
+        region = input_widget.parent.region
+        width = max(region.width, 24)
+        self.suggest_list.styles.offset = (max(0, min(region.x, self.size.width - width)), 3)
+        self.suggest_list.styles.width = width
         self.suggest_list.display = True
 
     def _hide_suggest(self):
@@ -1359,6 +1455,14 @@ class Catflap(App):
             self._hide_suggest()
         if w is not self.level_menu:
             self.level_menu.display = False
+        if isinstance(w, Input) and w.id == "pkg":
+            self._update_suggest(w)  # the package box drops down on focus
+
+    def on_click(self, event):
+        # reopen on click even when the box already has focus (e.g. after escape)
+        w = event.widget
+        if isinstance(w, Input) and w.id == "pkg" and not self.suggest_list.display:
+            self._update_suggest(w)
 
     def on_key(self, event):
         focused = self.focused
@@ -1366,6 +1470,7 @@ class Catflap(App):
             if event.key == "down":
                 self.set_focus(self.suggest_list)
                 self.suggest_list.highlighted = 0
+                event.prevent_default()  # keep the list's own ↓ binding from skipping to item 1
                 event.stop()
             elif event.key == "escape":
                 self._hide_suggest()

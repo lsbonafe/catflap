@@ -11,6 +11,7 @@ from catflap import (
     matches,
     md_escape,
     parse_devices,
+    parse_foreground,
     parse_line,
     parse_terms,
     split_last_term,
@@ -260,6 +261,39 @@ emulator-5554          device product:sdk_gphone64_arm64 model:sdk_gphone64_arm6
 
     def test_skips_offline_and_empty(self):
         self.assertEqual(parse_devices("List of devices attached\n\n"), [])
+
+
+class ParseForegroundTest(unittest.TestCase):
+    MODERN = """
+    topResumedActivity=ActivityRecord{a1b2c3 u0 com.teads.sample/.MainActivity t123}
+    mFocusedApp=ActivityRecord{a1b2c3 u0 com.teads.sample/.MainActivity t123}
+"""
+    LEGACY = """
+    mResumedActivity: ActivityRecord{d4e5f6 u0 com.example.legacy/.HomeActivity t7}
+"""
+    FOCUSED_ONLY = """
+    mFocusedApp=ActivityRecord{9a8b7c u10 org.work.profile/.SplashActivity t42}
+"""
+
+    PIXEL_A16 = """
+  ResumedActivity: ActivityRecord{253754768 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t2}
+  mFocusedApp=null
+"""
+
+    def test_pixel_android16_resumed_activity(self):
+        self.assertEqual(parse_foreground(self.PIXEL_A16), "com.google.android.apps.nexuslauncher")
+
+    def test_top_resumed_activity(self):
+        self.assertEqual(parse_foreground(self.MODERN), "com.teads.sample")
+
+    def test_legacy_resumed_activity(self):
+        self.assertEqual(parse_foreground(self.LEGACY), "com.example.legacy")
+
+    def test_focused_app_fallback_with_user_id(self):
+        self.assertEqual(parse_foreground(self.FOCUSED_ONLY), "org.work.profile")
+
+    def test_no_match(self):
+        self.assertIsNone(parse_foreground("ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)"))
 
 
 class SuggestTest(unittest.TestCase):
