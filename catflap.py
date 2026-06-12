@@ -363,6 +363,9 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/]
 
   [b]^g[/] opens the last crash with its full stack trace
 
+  [b]/[/] searches the displayed lines (plain text or [i $secondary]/regex/[/]) —
+  [b]enter[/] jumps to the latest match, [b]n[/]/[b]N[/] hop older/newer, [b]esc[/] closes
+
 
 [b u $accent]Copying from the terminal[/]
 
@@ -840,6 +843,10 @@ class Catflap(App):
     DropdownArrow:hover { color: $text; }
     #statusbar { height: 1; }
     #status { width: 1fr; height: 1; color: $text 60%; padding: 0 1; }
+    #searchrow { height: 1; display: none; }
+    #search-slash { width: 2; content-align: center middle; color: $accent; text-style: bold; }
+    #searchbar { width: 1fr; height: 1; border: none; padding: 0 1; background: transparent; }
+    #search-count { width: auto; height: 1; padding: 0 1; color: $text 60%; }
     #brand { width: auto; height: 1; padding: 0 1; color: $accent; text-style: bold; }
     #minlevel { width: auto; height: 3; padding: 1 2; color: $text 60%; }
     #minlevel:hover { color: $text; }
@@ -900,6 +907,11 @@ class Catflap(App):
                 "💥 Jump to last crash",
                 "Open the most recent FATAL EXCEPTION with its stack trace",
                 self.action_jump_crash,
+            ),
+            SystemCommand(
+                "🔍 Search displayed lines",
+                "Find and jump to matches in the filtered scrollback (also: /)",
+                self.action_search,
             ),
             # exports
             SystemCommand(
@@ -1028,6 +1040,11 @@ class Catflap(App):
         self.min_level = "V"
         self.level_exact = False
         self.foreground_pkg = None
+        self._search_active = False
+        self._search_autopause = False
+        self._search_entries = []
+        self._search_matches = []
+        self._search_pos = -1
         self._preferred_serial = None
         self._state = {}
 
@@ -1048,6 +1065,10 @@ class Catflap(App):
         with Horizontal(id="statusbar"):
             yield Static("starting…", id="status")
             yield Static("🐈 𝒸𝒶𝓉𝒻𝓁𝒶𝓅", id="brand")
+        with Horizontal(id="searchrow"):
+            yield Static("/", id="search-slash")
+            yield Input(placeholder="search — enter: jump · n/N: older/newer · esc: close", id="searchbar")
+            yield Static("", id="search-count")
         yield OrderedFooter()
         yield OptionList(id="suggest")
         yield OptionList(id="levelmenu")
@@ -1218,12 +1239,12 @@ class Catflap(App):
             and matches(e.msg, self.f_msg)
         )
 
-    def _render(self, e):
+    def _render(self, e, highlight=False):
         style = self.level_styles.get(e.level, "")
         pkg = self.pid_names.get(e.pid, e.pid)
         if len(pkg) > 28:
             pkg = "…" + pkg[-27:]
-        return Text.assemble(
+        text = Text.assemble(
             (e.ts, "dim"),
             "  ",
             (pkg.ljust(28), "bright_black"),
@@ -1234,6 +1255,9 @@ class Catflap(App):
             ": ",
             (e.msg, style if e.level in ("E", "F", "W") else ""),
         )
+        if highlight:
+            text.stylize("reverse")
+        return text
 
     def _drain(self):
         visible = []
@@ -1484,6 +1508,82 @@ class Catflap(App):
         elif focused is self.level_menu and event.key == "escape":
             self.level_menu.display = False
             event.stop()
+        elif event.character == "/" and (focused is self.log_widget or focused is None):
+            self.action_search()
+            event.stop()
+        elif self._search_active and focused is self.log_widget and event.key in ("n", "N"):
+            if self._search_matches:
+                step = -1 if event.key == "n" else 1
+                self._search_pos = (self._search_pos + step) % len(self._search_matches)
+                self._jump_to_match()
+            event.stop()
+        elif self._search_active and event.key == "escape" and (
+            focused is self.log_widget or (focused is not None and focused.id == "searchbar")
+        ):
+            self._close_search()
+            event.stop()
+
+    # ---- search in scrollback ----------------------------------------------------
+
+    def action_search(self):
+        if not self._search_active:
+            self._search_active = True
+            self._search_autopause = not self.paused
+            if not self.paused:
+                self.action_pause()  # lines must hold still while navigating
+            self._search_entries = [e for e in self.buffer if self._entry_visible(e)]
+            self.query_one("#statusbar").display = False
+            self.query_one("#searchrow").display = True
+        self.set_focus(self.query_one("#searchbar", Input))
+
+    def _close_search(self):
+        if not self._search_active:
+            return
+        self._search_active = False
+        self.query_one("#searchrow").display = False
+        self.query_one("#statusbar").display = True
+        self.query_one("#searchbar", Input).value = ""
+        self.query_one("#search-count", Static).update("")
+        self._search_entries = []
+        self._search_matches = []
+        self.set_focus(self.log_widget)
+        if self._search_autopause and self.paused:
+            self.action_resume()  # re-renders the live tail, dropping the highlight
+        else:
+            self._refresh_view()
+
+    def _run_search(self, term):
+        pattern = compile_term(term)
+        self._search_matches = [
+            i for i, e in enumerate(self._search_entries)
+            if pattern.search(e.msg) or pattern.search(e.tag)
+            or pattern.search(self.pid_names.get(e.pid, ""))
+        ]
+        if not self._search_matches:
+            self.query_one("#search-count", Static).update("no matches")
+            return
+        self._search_pos = len(self._search_matches) - 1  # most recent first
+        self._jump_to_match()
+        self.set_focus(self.log_widget)  # so n/N navigate right away
+
+    def _jump_to_match(self):
+        idx = self._search_matches[self._search_pos]
+        start = max(0, idx - DISPLAY_MAX // 2)
+        window = self._search_entries[start:start + DISPLAY_MAX]
+        self.log_widget.clear()
+        for j, e in enumerate(window, start=start):
+            self.log_widget.write(self._render(e, highlight=(j == idx)), scroll_end=False)
+        line = idx - start
+        self.log_widget.scroll_to(
+            y=max(0, line - self.log_widget.size.height // 2), animate=False
+        )
+        self.query_one("#search-count", Static).update(
+            f"{self._search_pos + 1}/{len(self._search_matches)}"
+        )
+
+    def on_input_submitted(self, event: Input.Submitted):
+        if event.input.id == "searchbar" and event.value.strip():
+            self._run_search(event.value.strip())
 
     def _filtered_entries_for_export(self):
         entries = [e for e in self.buffer if self._entry_visible(e)]
