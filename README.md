@@ -35,10 +35,9 @@ catflap's niche is the **terminal**: live boolean filtering with package/PID res
 | [lazylogcat](https://github.com/parfenovvs/lazylogcat) | TUI | ❌ per-field, regex | — | ❌ | ❌ | ✅ (2026) |
 | [purr](https://github.com/google/purr) | TUI (fzf) | ❌ fuzzy | ❌ | ✅ shell, wipe, bugreport | ❌ | ⚠️ (2023) |
 | [rogcat](https://github.com/flxo/rogcat) | pipe | ❌ regex ±negate | ❌ | ⚠️ devices, clear, bugreport | ❌ | ✅ (2024) |
-| [lnav](https://github.com/tstack/lnav) | TUI | ✅ SQL `WHERE` | n/a | n/a (not Android) | n/a | ✅ (2026) |
 | `adb logcat` | pipe | ❌ tag\:level, 1 regex | ⚠️ manual `--pid` | n/a | ❌ | ✅ |
 
-<sub>— = not documented / unconfirmed. Snapshot June 2026; check each project for current state. [lnav](https://lnav.org) is a general-purpose log viewer included for its filtering, not an Android tool.</sub>
+<sub>— = not documented / unconfirmed. Snapshot June 2026; check each project for current state.</sub>
 
 **Agent/headless CLI:** catflap and lazylogcat both ship a non-interactive `dump` command with a SKILL.md for AI agents. catflap's exposes its full boolean/regex filter syntax (`--message "timeout OR /anr/"`); lazylogcat's is contains-match only. The others are interactive- or pipe-only.
 
