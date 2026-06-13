@@ -376,8 +376,10 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/]
 
   [b]package[/] matches the process name; [b]tag[/] and [b]message[/] their own field
 
-  the [b]Level[/] chip filters by severity — [b]≥[/] shows that level and worse,
+  the [b]Level[/] chip ([b]F2[/]) filters by severity — [b]≥[/] shows that level and worse,
   [b]=[/] shows exactly that level (switch modes inside the chip's menu)
+
+  in any filter box: [b]^u[/] clears to the start, [b]^k[/] to the end
 
   [b]^g[/] opens the last crash with its full stack trace
 
@@ -925,6 +927,7 @@ class Catflap(App):
         Binding("ctrl+b", "pick_buffer", "Buffer", priority=True),
         Binding("ctrl+a", "adb_menu", "ADB", priority=True),
         Binding("f1", "help", "Filtering", show=False, priority=True),
+        Binding("f2", "level_menu", "Level", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
@@ -965,6 +968,11 @@ class Catflap(App):
                 "🤖 ADB operations",
                 "Start/kill/clear/uninstall the target app, permissions, deep links, screenshots",
                 self.action_adb_menu,
+            ),
+            SystemCommand(
+                "🎚 Set minimum level",
+                "Open the level menu: V/D/I/W/E threshold or exact mode (also: F2)",
+                self.action_level_menu,
             ),
             # debugging
             SystemCommand(
@@ -1047,6 +1055,9 @@ class Catflap(App):
 
     def action_help(self):
         self.push_screen(HelpScreen())
+
+    def action_level_menu(self):
+        self.toggle_level_menu()
 
     def action_command_palette(self):
         if self.use_command_palette and not CommandPalette.is_open(self):
