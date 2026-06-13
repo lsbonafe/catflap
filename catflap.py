@@ -8,6 +8,7 @@ e.g. message box: "toto OR bla bla".
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -955,6 +956,11 @@ class Catflap(App):
                 self._install_apk_flow,
             ),
             SystemCommand(
+                "🖥 Mirror screen (scrcpy)",
+                "Open the device screen in a controllable window (requires scrcpy)",
+                self._mirror_screen,
+            ),
+            SystemCommand(
                 "📚 Switch log buffer",
                 "Stream crash, events, radio, or the default main+system buffers",
                 self.action_pick_buffer,
@@ -1452,11 +1458,33 @@ class Catflap(App):
                 self.action_pick_device()
             elif choice.startswith("📦"):
                 self._install_apk_flow()
+            elif choice.startswith("🖥"):
+                self._mirror_screen()
 
         self.push_screen(
-            PickListScreen(title, ["🔄 Switch streaming device", "📦 Install APK…"]),
+            PickListScreen(
+                title,
+                ["🔄 Switch streaming device", "📦 Install APK…", "🖥 Mirror screen (scrcpy)"],
+            ),
             done,
         )
+
+    def _mirror_screen(self):
+        """Open scrcpy on the current device in its own window; control stays with it."""
+        if self.serial is None:
+            self.notify("No devices connected.", severity="warning")
+            return
+        if shutil.which("scrcpy") is None:
+            self.notify("scrcpy not found — install with: brew install scrcpy", severity="warning")
+            return
+        try:
+            subprocess.Popen(
+                ["scrcpy", "-s", self.serial],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self.notify(f"Mirroring {self.device_model or self.serial}…")
+        except Exception as ex:
+            self.notify(f"scrcpy failed: {ex}", severity="error")
 
     # ---- install apk -------------------------------------------------------------
 

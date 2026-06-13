@@ -14,7 +14,7 @@ The little door your Android logs come through. A terminal UI for logcat with An
 - **Severity filtering**: clickable `Level` chip (or `F2`) with a dropdown; switchable operator — `≥` (that level and worse) or `=` (exactly that level)
 - **Search the scrollback** (`/`): jump to matches across the whole buffer, not just what's on screen; `n`/`N` step between hits, same plain-text or `/regex/` syntax as the filters
 - **Crash spotlight**: FATAL EXCEPTIONs trigger a toast and a persistent 💥 indicator; `Ctrl+G` opens the full stack trace in a modal, regardless of active filters
-- **Device menu** (`Ctrl+D`): switch the streaming device (AVD names for emulators, auto-reconnect) or install an APK onto it via a native file picker
+- **Device menu** (`Ctrl+D`): switch the streaming device (AVD names for emulators, auto-reconnect), install an APK via a native file picker, or mirror the screen with [scrcpy](https://github.com/Genymobile/scrcpy) if it's installed
 - **Log buffer selection** (`Ctrl+B`): stream `crash`, `events`, `radio`, or everything instead of the default `main`+`system`
 - **ADB operations menu** (`Ctrl+A`): start/restart/kill the target app, simulate process death, clear data, uninstall, grant/revoke permissions, open deep links, screenshot, screen record
 - **Pause/resume** (`Ctrl+S`): freeze the view to read or select text; the buffer keeps filling and renders on resume
@@ -43,6 +43,7 @@ catflap's niche is the **terminal**: live boolean filtering with package/PID res
 
 - Python ≥ 3.9
 - `adb` in PATH with a device/emulator connected (USB debugging enabled). On macOS: `brew install --cask android-platform-tools`
+- _Optional:_ [`scrcpy`](https://github.com/Genymobile/scrcpy) for screen mirroring (`brew install scrcpy`)
 
 ## Install
 
