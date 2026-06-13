@@ -2,25 +2,31 @@
 
 The little door your Android logs come through. A terminal UI for logcat with Android Studio-grade filtering — live, fast, and keyboard-friendly. Built with [Textual](https://textual.textualize.io/).
 
-![](https://img.shields.io/badge/python-3.9%2B-blue) ![](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![](https://img.shields.io/badge/python-3.9%2B-blue) ![](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey) ![](https://img.shields.io/badge/install-brew-orange)
+
+![catflap screenshot](docs/screenshot.svg)
 
 ## Features
 
 - **Live filters that update as you type**: package, tag, and message boxes with autocomplete suggestions drawn from the actual stream (process names, tags, frequent messages)
 - **Boolean query syntax** in every box: `ad AND timeout`, `wifi OR coffee`, `NOT /Choreographer|gralloc/` — uppercase operators, `AND` binds tighter than `OR`, `/slashes/` for regex, everything else literal
-- **Severity filtering**: clickable `Level ≥ W` chip with a dropdown; switchable operator — `≥` (that level and worse) or `=` (exactly that level)
+- **Foreground-app detection**: the package box doubles as a dropdown (click the `▼` or focus it) with the app currently on screen pinned on top — one click to filter on it
+- **Severity filtering**: clickable `Level` chip (or `F2`) with a dropdown; switchable operator — `≥` (that level and worse) or `=` (exactly that level)
+- **Search the scrollback** (`/`): jump to matches across the whole buffer, not just what's on screen; `n`/`N` step between hits, same plain-text or `/regex/` syntax as the filters
 - **Crash spotlight**: FATAL EXCEPTIONs trigger a toast and a persistent 💥 indicator; `Ctrl+G` opens the full stack trace in a modal, regardless of active filters
-- **Device management**: auto-selects a single device, clickable picker for several (AVD names for emulators), auto-reconnect, `Ctrl+D` to switch
+- **Device menu** (`Ctrl+D`): switch the streaming device (AVD names for emulators, auto-reconnect) or install an APK onto it via a native file picker
+- **Log buffer selection** (`Ctrl+B`): stream `crash`, `events`, `radio`, or everything instead of the default `main`+`system`
+- **ADB operations menu** (`Ctrl+A`): start/restart/kill the target app, simulate process death, clear data, uninstall, grant/revoke permissions, open deep links, screenshot, screen record
 - **Pause/resume** (`Ctrl+S`): freeze the view to read or select text; the buffer keeps filling and renders on resume
 - **Exports** (`Ctrl+E`): Markdown table or raw `.log`, respecting active filters, to a configurable folder
-- **Filter presets** and full session persistence (filters, level, device, theme, wrap, export folder)
+- **Filter presets** and full session persistence (filters, level, device, buffer, theme, wrap, export folder)
 - **Theme-aware**: all colors (log levels, operators, indicators) derive from the active Textual theme — switch via the command palette
 - Pid→package mapping that survives process death, so crash lines stay attributed and filterable
 
 ## Requirements
 
 - Python ≥ 3.9
-- `adb` in PATH with a device/emulator connected (USB debugging enabled)
+- `adb` in PATH with a device/emulator connected (USB debugging enabled). On macOS: `brew install --cask android-platform-tools`
 
 ## Install
 
@@ -41,7 +47,7 @@ Or from a clone:
 ```bash
 git clone https://github.com/lsbonafe/catflap.git
 cd catflap
-python3 -m venv .venv
+python3 -m venv .venv      # use a working Python ≥ 3.9 (e.g. /usr/bin/python3 on macOS)
 .venv/bin/pip install .
 ```
 
@@ -58,11 +64,17 @@ catflap
 | `Ctrl+L` | Clear the local view |
 | `Ctrl+S` | Pause / resume the stream |
 | `Ctrl+G` | Jump to the last crash |
+| `Ctrl+D` | Device menu (switch device / install APK) |
+| `Ctrl+B` | Switch log buffer |
+| `Ctrl+A` | ADB operations menu |
 | `Ctrl+E` | Export (Markdown / raw log) |
-| `Ctrl+D` | Switch device |
+| `/` | Search the scrollback (`n`/`N` to step) |
 | `F1` | Filtering cheatsheet |
-| `Ctrl+P` | Command palette (presets, wrap, device buffer, theme…) |
+| `F2` | Level menu |
+| `Ctrl+P` | Command palette (presets, wrap, theme, factory reset…) |
 | `Ctrl+Q` | Quit |
+
+Inside the filter boxes, `Ctrl+U` clears to the start of the field and `Ctrl+K` to the end.
 
 ## Filtering examples
 
@@ -79,7 +91,7 @@ Press `F1` inside the app for the full cheatsheet, including how to copy text fr
 ## Development
 
 ```bash
-.venv/bin/python -m unittest discover    # 58 tests: unit + headless UI integration
+.venv/bin/python -m unittest discover    # 68 tests: unit + headless UI integration
 ```
 
 State is persisted at `~/.config/catflap/state.json` (palette → "Restore factory defaults" wipes it).
