@@ -27,15 +27,15 @@ The little door your Android logs come through. A terminal UI for logcat with An
 
 catflap's niche is the **terminal**: live boolean filtering with package/PID resolution, ADB device actions, and screen mirroring — in one keyboard-driven TUI. No other terminal tool combines them.
 
-| Tool | UI | Boolean filters | PID resolution | ADB actions | Maintained |
-| --- | --- | --- | --- | --- | --- |
-| **catflap** | TUI | ✅ `AND`/`OR`/`NOT` + regex | ✅ | ✅ install, clear, perms, deep links, screenshot/record, mirror (scrcpy) | ✅ |
-| [pidcat](https://github.com/JakeWharton/pidcat) | pipe | ❌ | ✅ | ❌ | ❌ (2022) |
-| [lazylogcat](https://github.com/parfenovvs/lazylogcat) | TUI | ❌ per-field, regex | — | ❌ | ✅ (2026) |
-| [purr](https://github.com/google/purr) | TUI (fzf) | ❌ fuzzy | ❌ | ✅ shell, wipe, bugreport | ⚠️ (2023) |
-| [rogcat](https://github.com/flxo/rogcat) | pipe | ❌ regex ±negate | ❌ | ⚠️ devices, clear, bugreport | ✅ (2024) |
-| [lnav](https://github.com/tstack/lnav) | TUI | ✅ SQL `WHERE` | n/a | n/a (not Android) | ✅ (2026) |
-| `adb logcat` | pipe | ❌ tag\:level, 1 regex | ⚠️ manual `--pid` | n/a | ✅ |
+| Tool | UI | Boolean filters | PID resolution | ADB actions | Screen mirror | Maintained |
+| --- | --- | --- | --- | --- | --- | --- |
+| **catflap** | TUI | ✅ `AND`/`OR`/`NOT` + regex | ✅ | ✅ install, clear, perms, deep links, screenshot/record | ✅ scrcpy | ✅ |
+| [pidcat](https://github.com/JakeWharton/pidcat) | pipe | ❌ | ✅ | ❌ | ❌ | ❌ (2022) |
+| [lazylogcat](https://github.com/parfenovvs/lazylogcat) | TUI | ❌ per-field, regex | — | ❌ | ❌ | ✅ (2026) |
+| [purr](https://github.com/google/purr) | TUI (fzf) | ❌ fuzzy | ❌ | ✅ shell, wipe, bugreport | ❌ | ⚠️ (2023) |
+| [rogcat](https://github.com/flxo/rogcat) | pipe | ❌ regex ±negate | ❌ | ⚠️ devices, clear, bugreport | ❌ | ✅ (2024) |
+| [lnav](https://github.com/tstack/lnav) | TUI | ✅ SQL `WHERE` | n/a | n/a (not Android) | n/a | ✅ (2026) |
+| `adb logcat` | pipe | ❌ tag\:level, 1 regex | ⚠️ manual `--pid` | n/a | ❌ | ✅ |
 
 <sub>— = not documented / unconfirmed. Snapshot June 2026; check each project for current state. [lnav](https://lnav.org) is a general-purpose log viewer included for its filtering, not an Android tool.</sub>
 
