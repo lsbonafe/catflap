@@ -956,7 +956,7 @@ class Catflap(App):
                 self._install_apk_flow,
             ),
             SystemCommand(
-                "🖥 Mirror screen (scrcpy)",
+                "🖥  Mirror screen (scrcpy)",
                 "Open the device screen in a controllable window (requires scrcpy)",
                 self._mirror_screen,
             ),
@@ -1464,7 +1464,7 @@ class Catflap(App):
         self.push_screen(
             PickListScreen(
                 title,
-                ["🔄 Switch streaming device", "📦 Install APK…", "🖥 Mirror screen (scrcpy)"],
+                ["🔄 Switch streaming device", "📦 Install APK…", "🖥  Mirror screen (scrcpy)"],
             ),
             done,
         )
