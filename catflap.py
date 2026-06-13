@@ -750,7 +750,7 @@ class LogPane(RichLog):
         return selection.extract(text), "\n"
 
 
-FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Export", "Device", "Buffer", "ADB", "Filtering", "Quit"]
+FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Export", "Device", "Buffer", "ADB", "Palette", "Quit"]
 
 
 class OrderedFooter(Footer):
@@ -760,32 +760,12 @@ class OrderedFooter(Footer):
         if not self._bindings_ready:
             return
         bindings = [
-            (binding, enabled, tooltip)
+            (binding, binding.description, enabled, tooltip)
             for (_, binding, enabled, tooltip) in self.screen.active_bindings.values()
             if binding.show
         ]
-
-        def rank(item):
-            try:
-                return FOOTER_ORDER.index(item[0].description)
-            except ValueError:
-                return len(FOOTER_ORDER)
-
-        bindings.sort(key=rank)
-        seen_actions = set()
-        self.styles.grid_size_columns = len(bindings)
-        for binding, enabled, tooltip in bindings:
-            if binding.action in seen_actions:
-                continue
-            seen_actions.add(binding.action)
-            yield FooterKey(
-                binding.key,
-                self.app.get_key_display(binding),
-                binding.description,
-                binding.action,
-                disabled=not enabled,
-                tooltip=tooltip,
-            ).data_bind(compact=Footer.compact)
+        # the palette binding is show=False; surface it as a regular in-flow key
+        # (skipping the -command-palette class that would dock it right)
         if self.show_command_palette and self.app.ENABLE_COMMAND_PALETTE:
             try:
                 _node, binding, enabled, tooltip = self.screen.active_bindings[
@@ -794,15 +774,31 @@ class OrderedFooter(Footer):
             except KeyError:
                 pass
             else:
-                yield FooterKey(
-                    binding.key,
-                    self.app.get_key_display(binding),
-                    binding.description,
-                    binding.action,
-                    classes="-command-palette",
-                    disabled=not enabled,
-                    tooltip=binding.tooltip or binding.description,
+                bindings.append(
+                    (binding, "Palette", enabled, tooltip or binding.description)
                 )
+
+        def rank(item):
+            try:
+                return FOOTER_ORDER.index(item[1])
+            except ValueError:
+                return len(FOOTER_ORDER)
+
+        bindings.sort(key=rank)
+        seen_actions = set()
+        self.styles.grid_size_columns = len(bindings)
+        for binding, description, enabled, tooltip in bindings:
+            if binding.action in seen_actions:
+                continue
+            seen_actions.add(binding.action)
+            yield FooterKey(
+                binding.key,
+                self.app.get_key_display(binding),
+                description,
+                binding.action,
+                disabled=not enabled,
+                tooltip=tooltip,
+            ).data_bind(compact=Footer.compact)
 
 
 class LevelChip(Static):
@@ -920,12 +916,17 @@ class Catflap(App):
         Binding("ctrl+d", "device_menu", "Device", priority=True),
         Binding("ctrl+b", "pick_buffer", "Buffer", priority=True),
         Binding("ctrl+a", "adb_menu", "ADB", priority=True),
-        Binding("f1", "help", "Filtering", priority=True),
+        Binding("f1", "help", "Filtering", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
     def get_system_commands(self, screen):
         commands = [
+            SystemCommand(
+                "❓ Filtering help",
+                "Cheatsheet: AND/OR/NOT operators and /regex/ syntax (also: F1)",
+                self.action_help,
+            ),
             # device
             SystemCommand(
                 "📱 Switch device",
@@ -1005,11 +1006,6 @@ class Catflap(App):
                 "📜 Toggle line wrap",
                 "Wrap long log lines instead of clipping them",
                 self.action_toggle_wrap,
-            ),
-            SystemCommand(
-                "❓ Filtering help",
-                "Cheatsheet: AND/OR/NOT operators and /regex/ syntax",
-                self.action_help,
             ),
             SystemCommand(
                 "♻️ Restore factory defaults",
@@ -1516,8 +1512,8 @@ class Catflap(App):
         else:
             name = self.device_model or self.serial
             device = f"device: {name}" if self._device_ok else f"device: {name} (offline)"
-        if self.log_buffers:
-            device += f"   |   buffer: {self.buffer_label}"
+        if self.serial is not None:
+            device += f"   |   buffer: {self.buffer_label or 'main+system'}"
         clipped = f" (last {DISPLAY_MAX} displayed)" if self.shown > DISPLAY_MAX else ""
         if self.paused:
             # no live counters while paused: a static screen is what lets the
