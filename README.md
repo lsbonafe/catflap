@@ -127,7 +127,7 @@ Press `F1` inside the app for the full cheatsheet, including how to copy text fr
 ## Development
 
 ```bash
-.venv/bin/python -m unittest discover    # 68 tests: unit + headless UI integration
+.venv/bin/python -m unittest discover    # 75 tests: unit + headless UI integration
 ```
 
 State is persisted at `~/.config/catflap/state.json` (palette → "Restore factory defaults" wipes it).
