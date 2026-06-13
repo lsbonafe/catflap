@@ -9,6 +9,7 @@ e.g. message box: "toto OR bla bla".
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
 from collections import Counter, deque
@@ -539,7 +540,10 @@ class PickListScreen(ModalScreen):
         width: 64; height: auto; max-height: 18; padding: 1 2;
         background: $surface; border: round $accent;
     }
-    #picklist-title { padding-bottom: 1; text-style: bold; }
+    #picklist-title-row { height: auto; }
+    #picklist-title { width: 1fr; padding-bottom: 1; text-style: bold; }
+    #picklist-close { width: 3; text-align: right; color: $text 50%; }
+    #picklist-close:hover { color: $text; }
     """
 
     BINDINGS = [
@@ -554,7 +558,9 @@ class PickListScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picklist-box"):
-            yield Label(self._title, id="picklist-title")
+            with Horizontal(id="picklist-title-row"):
+                yield Label(self._title, id="picklist-title")
+                yield CloseButton(id="picklist-close")
             yield OptionList(
                 *[Option(o, id=str(i)) for i, o in enumerate(self._options)]
             )
@@ -606,7 +612,10 @@ class FilterPickScreen(ModalScreen):
         width: 64; height: auto; max-height: 24; padding: 1 2;
         background: $surface; border: round $accent;
     }
-    #fpick-title { padding-bottom: 1; text-style: bold; }
+    #fpick-title-row { height: auto; }
+    #fpick-title { width: 1fr; padding-bottom: 1; text-style: bold; }
+    #fpick-close { width: 3; text-align: right; color: $text 50%; }
+    #fpick-close:hover { color: $text; }
     #fpick-list { height: auto; max-height: 14; }
     """
 
@@ -624,7 +633,9 @@ class FilterPickScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="fpick-box"):
-            yield Label(self._title, id="fpick-title")
+            with Horizontal(id="fpick-title-row"):
+                yield Label(self._title, id="fpick-title")
+                yield CloseButton(id="fpick-close")
             yield Input(placeholder=self._placeholder, id="fpick-input")
             yield OptionList(id="fpick-list")
 
@@ -808,7 +819,10 @@ class DevicePickerScreen(ModalScreen):
         width: 64; height: auto; max-height: 18; padding: 1 2;
         background: $surface; border: round $accent;
     }
-    #picker-title { padding-bottom: 1; text-style: bold; }
+    #picker-title-row { height: auto; }
+    #picker-title { width: 1fr; padding-bottom: 1; text-style: bold; }
+    #picker-close { width: 3; text-align: right; color: $text 50%; }
+    #picker-close:hover { color: $text; }
     """
 
     BINDINGS = [
@@ -816,19 +830,32 @@ class DevicePickerScreen(ModalScreen):
         ("ctrl+q", "app.quit", "Quit"),
     ]
 
-    def __init__(self, devices):
+    def __init__(self, devices, current=None):
         super().__init__()
         self.devices = devices
+        self.current = current
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-box"):
-            yield Label("Select a device", id="picker-title")
+            with Horizontal(id="picker-title-row"):
+                yield Label("Select a device", id="picker-title")
+                yield CloseButton(id="picker-close")
             yield OptionList(
                 *[
-                    Option(f"{model or '(unknown model)'}  —  {serial}", id=serial)
+                    Option(
+                        ("✓ " if serial == self.current else "  ")
+                        + f"{model or '(unknown model)'}  —  {serial}"
+                        + ("  (streaming)" if serial == self.current else ""),
+                        id=serial,
+                    )
                     for serial, model in self.devices
                 ]
             )
+
+    def on_mount(self):
+        serials = [s for s, _ in self.devices]
+        if self.current in serials:
+            self.query_one(OptionList).highlighted = serials.index(self.current)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected):
         serial = event.option.id
@@ -890,7 +917,7 @@ class Catflap(App):
         Binding("ctrl+s", "resume", "Resume", priority=True),
         Binding("ctrl+g", "jump_crash", "Crash", priority=True),
         Binding("ctrl+e", "export_menu", "Export", priority=True),
-        Binding("ctrl+d", "pick_device", "Device", priority=True),
+        Binding("ctrl+d", "device_menu", "Device", priority=True),
         Binding("ctrl+b", "pick_buffer", "Buffer", priority=True),
         Binding("ctrl+a", "adb_menu", "ADB", priority=True),
         Binding("f1", "help", "Filtering", priority=True),
@@ -909,6 +936,11 @@ class Catflap(App):
                 "📱 Clear device buffer",
                 "adb logcat -c on the device, plus the local view",
                 self.action_clear_device,
+            ),
+            SystemCommand(
+                "📦 Install APK",
+                "Pick an .apk file to install on the current device (adb install -r)",
+                self._install_apk_flow,
             ),
             SystemCommand(
                 "📚 Switch log buffer",
@@ -1359,7 +1391,7 @@ class Catflap(App):
             if result:
                 self._select_device(*result)
 
-        self.push_screen(DevicePickerScreen(devices), done)
+        self.push_screen(DevicePickerScreen(devices, current=self.serial), done)
 
     def action_pick_buffer(self):
         if self.serial is None:
@@ -1398,6 +1430,85 @@ class Catflap(App):
             self.notify("No devices connected.", severity="warning")
             return
         self._open_picker(devices)
+
+    def action_device_menu(self):
+        name = self.device_model or self.serial
+        title = f"Device — {name}" if self.serial else "No devices connected"
+
+        def done(choice):
+            if not choice:
+                return
+            if choice.startswith("🔄"):
+                self.action_pick_device()
+            elif choice.startswith("📦"):
+                self._install_apk_flow()
+
+        self.push_screen(
+            PickListScreen(title, ["🔄 Switch streaming device", "📦 Install APK…"]),
+            done,
+        )
+
+    # ---- install apk -------------------------------------------------------------
+
+    def _install_apk_flow(self):
+        """Installs onto the streaming device; switch device first to target another."""
+        if self.serial is None:
+            self.notify("No devices connected.", severity="warning")
+            return
+        self._pick_apk_then_install(self.serial, self.device_model)
+
+    def _pick_apk_then_install(self, serial, model):
+        if sys.platform == "darwin":
+            def work():
+                try:
+                    r = subprocess.run(
+                        ["osascript", "-e",
+                         'POSIX path of (choose file with prompt "Choose an APK to install")'],
+                        capture_output=True, text=True, timeout=300,
+                    )
+                    path = r.stdout.strip()
+                    if r.returncode == 0 and path:
+                        self.call_from_thread(self._install_apk, serial, model, path)
+                except Exception as ex:
+                    self.call_from_thread(self.notify, f"File dialog failed: {ex}", severity="error")
+
+            threading.Thread(target=work, daemon=True).start()
+            return
+
+        def done(path):
+            if path:
+                self._install_apk(serial, model, path)
+
+        self.push_screen(TextPromptScreen("APK path", "", "/path/to/app.apk"), done)
+
+    def _install_apk(self, serial, model, path):
+        p = Path(path).expanduser()
+        if not p.is_file() or p.suffix.lower() != ".apk":
+            self.notify(f"Not an APK: {p.name or path}", severity="error")
+            return
+        name = model or serial
+        self.notify(f"Installing {p.name} on {name}…")
+
+        def work():
+            try:
+                r = subprocess.run(
+                    ["adb", "-s", serial, "install", "-r", str(p)],
+                    capture_output=True, text=True, timeout=300,
+                )
+                out = f"{r.stdout}\n{r.stderr}"
+                ok = r.returncode == 0 and "Success" in out
+                msg = (
+                    f"Installed {p.name} on {name}"
+                    if ok
+                    else (out.strip().splitlines() or ["install failed"])[-1]
+                )
+                self.call_from_thread(
+                    self.notify, msg, severity="information" if ok else "error"
+                )
+            except Exception as ex:
+                self.call_from_thread(self.notify, f"adb failed: {ex}", severity="error")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _update_status(self):
         if self.serial is None:
@@ -1876,10 +1987,23 @@ class Catflap(App):
         if ok and then:
             then()
 
+    def _default_adb_target(self):
+        """The app the package filter unambiguously points at, if any."""
+        text = self.query_one("#pkg", Input).value.strip()
+        if not text or not self.f_pkg:
+            return None
+        names = sorted({n for n in self.pid_names.values() if "." in n})
+        if text in names:
+            return text
+        matching = [n for n in names if matches(n, self.f_pkg)]
+        return matching[0] if len(matching) == 1 else None
+
     def action_adb_menu(self):
         if self.serial is None:
             self.notify("No device selected.", severity="warning")
             return
+        if self._adb_target is None:
+            self._adb_target = self._default_adb_target()
         if self._adb_target is None:
             self._pick_adb_target()
         else:
