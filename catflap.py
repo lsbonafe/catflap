@@ -750,7 +750,7 @@ class LogPane(RichLog):
         return selection.extract(text), "\n"
 
 
-FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Export", "Device", "Buffer", "ADB", "Palette", "Quit"]
+FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Device", "Buffer", "ADB", "Export", "Palette", "Quit"]
 
 
 class OrderedFooter(Footer):
@@ -1013,16 +1013,12 @@ class Catflap(App):
                 self.action_factory_reset,
             ),
         ]
-        # built-ins: emoji for each; Advanced (Keys/Maximize) just above Quit, Quit last
-        advanced, quit_cmd = [], None
+        # built-ins: emoji for each; Keys/Maximize dropped (footer + F1 cover them); Quit last
+        quit_cmd = None
         for cmd in super().get_system_commands(screen):
             low = cmd.title.lower()
             if "keys" in low or "maximize" in low:
-                advanced.append(
-                    SystemCommand(
-                        f"⚙️ Advanced — {cmd.title}", cmd.help, cmd.callback, cmd.discover
-                    )
-                )
+                continue
             elif "quit" in low:
                 quit_cmd = SystemCommand(f"🚪 {cmd.title}", cmd.help, cmd.callback, cmd.discover)
             elif "theme" in low:
@@ -1031,7 +1027,6 @@ class Catflap(App):
                 commands.append(SystemCommand(f"📸 {cmd.title}", cmd.help, cmd.callback, cmd.discover))
             else:
                 commands.append(SystemCommand(f"⚙️ {cmd.title}", cmd.help, cmd.callback, cmd.discover))
-        commands.extend(advanced)
         if quit_cmd:
             commands.append(quit_cmd)
         # the palette sorts discovery hits alphabetically by title; an invisible
