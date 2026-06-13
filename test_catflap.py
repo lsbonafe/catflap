@@ -1,7 +1,10 @@
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
+import catflap
 from catflap import (
+    _pick_dump_serial,
     crash_block,
     export_filename,
     export_markdown,
@@ -309,6 +312,41 @@ class ParseForegroundTest(unittest.TestCase):
 
     def test_no_match(self):
         self.assertIsNone(parse_foreground("ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)"))
+
+
+class PickDumpSerialTest(unittest.TestCase):
+    def _with_devices(self, devices):
+        return patch.object(catflap, "list_devices", return_value=devices)
+
+    def test_no_devices(self):
+        with self._with_devices([]):
+            serial, err = _pick_dump_serial(None)
+        self.assertIsNone(serial)
+        self.assertIn("no devices", err)
+
+    def test_single_device_auto(self):
+        with self._with_devices([("R3CX10ABCDE", "SM S928B")]):
+            serial, err = _pick_dump_serial(None)
+        self.assertEqual(serial, "R3CX10ABCDE")
+        self.assertIsNone(err)
+
+    def test_multiple_requires_device(self):
+        with self._with_devices([("a", "x"), ("b", "y")]):
+            serial, err = _pick_dump_serial(None)
+        self.assertIsNone(serial)
+        self.assertIn("multiple devices", err)
+
+    def test_requested_present(self):
+        with self._with_devices([("a", "x"), ("b", "y")]):
+            serial, err = _pick_dump_serial("b")
+        self.assertEqual(serial, "b")
+        self.assertIsNone(err)
+
+    def test_requested_absent(self):
+        with self._with_devices([("a", "x")]):
+            serial, err = _pick_dump_serial("zzz")
+        self.assertIsNone(serial)
+        self.assertIn("not found", err)
 
 
 class SuggestTest(unittest.TestCase):

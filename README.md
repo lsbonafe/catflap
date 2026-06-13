@@ -22,6 +22,7 @@ The little door your Android logs come through. A terminal UI for logcat with An
 - **Filter presets** and full session persistence (filters, level, device, buffer, theme, wrap, export folder)
 - **Theme-aware**: all colors (log levels, operators, indicators) derive from the active Textual theme — switch via the command palette
 - Pid→package mapping that survives process death, so crash lines stay attributed and filterable
+- **Headless mode for scripts & AI agents** (`catflap dump`): the same boolean/regex filtering piped to stdout (text or JSONL), no TUI — ships a [SKILL.md](SKILL.md) so coding agents can pull filtered logs in one call
 
 ## How it compares
 
@@ -38,6 +39,8 @@ catflap's niche is the **terminal**: live boolean filtering with package/PID res
 | `adb logcat` | pipe | ❌ tag\:level, 1 regex | ⚠️ manual `--pid` | n/a | ❌ | ✅ |
 
 <sub>— = not documented / unconfirmed. Snapshot June 2026; check each project for current state. [lnav](https://lnav.org) is a general-purpose log viewer included for its filtering, not an Android tool.</sub>
+
+**Agent/headless CLI:** catflap and lazylogcat both ship a non-interactive `dump` command with a SKILL.md for AI agents. catflap's exposes its full boolean/regex filter syntax (`--message "timeout OR /anr/"`); lazylogcat's is contains-match only. The others are interactive- or pipe-only.
 
 ## Requirements
 
@@ -73,6 +76,22 @@ python3 -m venv .venv      # use a working Python ≥ 3.9 (e.g. /usr/bin/python3
 ```bash
 catflap
 ```
+
+## Headless mode (scripts & AI agents)
+
+`catflap dump` prints filtered logcat to stdout and exits — no TUI — using the
+same boolean/regex syntax as the app:
+
+```bash
+catflap dump --package com.example.app --level E --format jsonl
+catflap dump --message "timeout OR anr OR /fatal/i" --lines 200
+catflap dump --package "com.example.app AND NOT gms" --buffer crash
+```
+
+`--format jsonl` emits one JSON object per line for easy parsing. See
+[`SKILL.md`](SKILL.md) for the agent-facing reference (coding agents like Claude
+Code and Cursor can install it to pull filtered logs in one call). Run
+`catflap dump --help` for all flags.
 
 ## Keys
 
