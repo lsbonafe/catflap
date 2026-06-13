@@ -2303,5 +2303,16 @@ class Catflap(App):
                 pass
 
 
-if __name__ == "__main__":
+def main():
+    if "--version" in sys.argv:
+        try:
+            from importlib.metadata import version
+            print(f"catflap {version('catflap')}")
+        except Exception:
+            print("catflap (dev)")
+        return
     Catflap().run()
+
+
+if __name__ == "__main__":
+    main()

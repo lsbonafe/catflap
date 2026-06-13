@@ -24,23 +24,31 @@ The little door your Android logs come through. A terminal UI for logcat with An
 
 ## Install
 
+Homebrew (macOS / Linux):
+
 ```bash
-git clone https://github.com/lbonafe/catflap.git
-cd catflap
-python3 -m venv .venv
-.venv/bin/pip install textual
+brew install lsbonafe/tap/catflap
 ```
 
-Optionally add an alias:
+Or with pipx / pip:
 
 ```bash
-alias catflap="/path/to/catflap/catflap"
+pipx install git+https://github.com/lsbonafe/catflap.git
+```
+
+Or from a clone:
+
+```bash
+git clone https://github.com/lsbonafe/catflap.git
+cd catflap
+python3 -m venv .venv
+.venv/bin/pip install .
 ```
 
 ## Run
 
 ```bash
-./catflap
+catflap
 ```
 
 ## Keys
