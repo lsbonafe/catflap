@@ -465,7 +465,15 @@ class CloseButton(Static):
         self.screen.dismiss()
 
 
-class HelpScreen(ModalScreen):
+class OutsideClickDismiss:
+    """Modal mixin: a click on the dimmed backdrop (outside the dialog) closes it."""
+
+    def on_click(self, event):
+        if event.widget is self:
+            self.dismiss(None)
+
+
+class HelpScreen(OutsideClickDismiss, ModalScreen):
     CSS = """
     HelpScreen { align: center middle; }
     #help-box {
@@ -498,7 +506,7 @@ class HelpScreen(ModalScreen):
         self.dismiss()
 
 
-class TextViewerScreen(ModalScreen):
+class TextViewerScreen(OutsideClickDismiss, ModalScreen):
     """Generic wrapped-text modal (crash blocks, full-line view)."""
 
     CSS = """
@@ -531,7 +539,7 @@ class TextViewerScreen(ModalScreen):
         self.dismiss()
 
 
-class PickListScreen(ModalScreen):
+class PickListScreen(OutsideClickDismiss, ModalScreen):
     """Generic option picker; dismisses with the chosen string or None."""
 
     CSS = """
@@ -572,7 +580,7 @@ class PickListScreen(ModalScreen):
         self.dismiss(None)
 
 
-class ExportDirScreen(ModalScreen):
+class ExportDirScreen(OutsideClickDismiss, ModalScreen):
     """Asks for the export folder; dismisses with the path string or None."""
 
     CSS = """
@@ -602,7 +610,7 @@ class ExportDirScreen(ModalScreen):
         self.dismiss(None)
 
 
-class FilterPickScreen(ModalScreen):
+class FilterPickScreen(OutsideClickDismiss, ModalScreen):
     """Option picker with a live filter box on top (same feel as the main filters).
     Dismisses with the chosen string or None."""
 
@@ -673,7 +681,7 @@ class FilterPickScreen(ModalScreen):
         self.dismiss(None)
 
 
-class TextPromptScreen(ModalScreen):
+class TextPromptScreen(OutsideClickDismiss, ModalScreen):
     """Generic one-line text prompt; dismisses with the value or None."""
 
     CSS = """
@@ -705,7 +713,7 @@ class TextPromptScreen(ModalScreen):
         self.dismiss(None)
 
 
-class SavePresetScreen(ModalScreen):
+class SavePresetScreen(OutsideClickDismiss, ModalScreen):
     """Asks for a preset name; dismisses with it or None."""
 
     CSS = """
@@ -808,7 +816,7 @@ class LevelChip(Static):
         self.app.toggle_level_menu()
 
 
-class DevicePickerScreen(ModalScreen):
+class DevicePickerScreen(OutsideClickDismiss, ModalScreen):
     CSS = """
     DevicePickerScreen { align: center middle; }
     #picker-box {
