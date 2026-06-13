@@ -60,10 +60,12 @@ LEVEL_STYLES = {
 
 def compile_term(term):
     """Plain text -> escaped substring pattern; /…/ -> regex. Both case-insensitive.
-    An invalid /regex/ falls back to literal matching."""
-    if len(term) > 2 and term.startswith("/") and term.endswith("/"):
+    A trailing 'i' (e.g. /foo/i) is accepted and ignored — matching is always
+    case-insensitive. An invalid /regex/ falls back to literal matching."""
+    m = re.fullmatch(r"/(.+)/i?", term)
+    if m:
         try:
-            return re.compile(term[1:-1], re.IGNORECASE)
+            return re.compile(m.group(1), re.IGNORECASE)
         except re.error:
             pass
     return re.compile(re.escape(term), re.IGNORECASE)

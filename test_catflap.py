@@ -74,6 +74,18 @@ class MatchesTest(unittest.TestCase):
         self.assertTrue(matches("weird /[/ literal", terms))
         self.assertFalse(matches("clean line", terms))
 
+    def test_regex_trailing_i_flag_accepted(self):
+        # /foo/i must behave like /foo/ (matching is always case-insensitive),
+        # not fall through to literal matching of the string "/foo/i"
+        terms = parse_terms("/choreographer/i")
+        self.assertTrue(matches("DisplayManager: Choreographer registered", terms))
+        self.assertFalse(matches("nothing here", terms))
+
+    def test_regex_i_flag_mixed_with_boolean(self):
+        terms = parse_terms("timeout OR /anr/i")
+        self.assertTrue(matches("ANR in com.foo", terms))
+        self.assertTrue(matches("read timeout", terms))
+
     def test_and_requires_all_terms(self):
         terms = parse_terms("ad AND timeout")
         self.assertTrue(matches("timeout while loading ad", terms))

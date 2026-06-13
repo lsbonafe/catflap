@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "catflap"
-version = "0.2.0"
+version = "0.3.0"
 description = "Terminal UI for Android logcat with Android Studio-grade filtering"
 readme = "README.md"
 license = { text = "MIT" }

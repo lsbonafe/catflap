@@ -45,7 +45,9 @@ Each filter expression supports:
 
 - **AND / OR / NOT** (uppercase only): `a AND b`, `x OR y`, `NOT z`.
   `AND` binds tighter than `OR`: `lost AND found OR stolen` = `(lost AND found) OR stolen`.
-- **/regex/** — wrap a term in slashes: `/retry \d+/`, `/anr|timeout/i`.
+- **/regex/** — wrap a term in slashes: `/retry \d+/`, `/anr|timeout/`. All
+  matching is **case-insensitive**, so no flag is needed; a trailing `i`
+  (`/anr/i`) is accepted but redundant.
 - Everything else is a case-insensitive substring; lowercase `or`/`and` are literal.
 
 ## Examples
@@ -71,5 +73,9 @@ catflap dump --device emulator-5554 --tag ActivityManager
 
 - The output is plain stdout — pipe, redirect, or parse it directly.
 - `text` format is `TIMESTAMP LEVEL PACKAGE_OR_PID TAG: MESSAGE`.
-- If nothing matches, the command prints nothing and exits 0.
+- In `jsonl`, `package` is `""` for system/server logs whose PID maps to no app
+  (e.g. `system_server`); it's filled in for real app processes.
+- If nothing matches, the command prints nothing and exits 0. Empty output means
+  "no matching lines" — if unsure your filter is right, first run it with a term
+  you know is present (e.g. a common tag) to confirm it returns lines.
 - Errors (no device, ambiguous device, adb missing) go to stderr with exit 1.
