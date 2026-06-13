@@ -25,11 +25,11 @@ The little door your Android logs come through. A terminal UI for logcat with An
 
 ## How it compares
 
-catflap's niche is the **terminal**: live boolean filtering with package/PID resolution and ADB device actions, in one keyboard-driven TUI. No other terminal tool combines all three.
+catflap's niche is the **terminal**: live boolean filtering with package/PID resolution, ADB device actions, and screen mirroring — in one keyboard-driven TUI. No other terminal tool combines them.
 
 | Tool | UI | Boolean filters | PID resolution | ADB actions | Maintained |
 | --- | --- | --- | --- | --- | --- |
-| **catflap** | TUI | ✅ `AND`/`OR`/`NOT` + regex | ✅ | ✅ install, clear, perms, deep links, screenshot/record | ✅ |
+| **catflap** | TUI | ✅ `AND`/`OR`/`NOT` + regex | ✅ | ✅ install, clear, perms, deep links, screenshot/record, mirror (scrcpy) | ✅ |
 | [pidcat](https://github.com/JakeWharton/pidcat) | pipe | ❌ | ✅ | ❌ | ❌ (2022) |
 | [lazylogcat](https://github.com/parfenovvs/lazylogcat) | TUI | ❌ per-field, regex | — | ❌ | ✅ (2026) |
 | [purr](https://github.com/google/purr) | TUI (fzf) | ❌ fuzzy | ❌ | ✅ shell, wipe, bugreport | ⚠️ (2023) |
