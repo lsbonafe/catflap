@@ -1054,7 +1054,7 @@ class LogPane(RichLog):
         return selection.extract(text), "\n"
 
 
-FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Device", "Buffer", "ADB", "Export", "Palette", "Quit"]
+FOOTER_ORDER = ["Device", "ADB", "Clear", "Pause", "Resume", "Crash", "Buffer", "Export", "Palette", "Quit"]
 
 
 class OrderedFooter(Footer):
