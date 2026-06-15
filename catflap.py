@@ -421,18 +421,25 @@ def md_escape(text):
     return text.replace("|", "\\|")
 
 
-def export_markdown(entries, filters_desc, when):
+def export_markdown(entries, filters_desc, when, packages=None):
+    """Markdown table export. Columns: Time | Level | Package | Tag | Message.
+
+    packages — {pid: package} to fill the Package column.
+    A crash row (level F or a FATAL EXCEPTION) shows 💥 in the Level cell."""
+    packages = packages or {}
     lines = [
         f"# logcat export — {when}",
         "",
         f"- Filters: {filters_desc}",
         f"- Lines: {len(entries)}",
         "",
-        "| Time | Tag | Message |",
-        "| --- | --- | --- |",
+        "| Time | Level | Package | Tag | Message |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for e in entries:
-        lines.append(f"| {e.ts} | {md_escape(e.tag)} | {md_escape(e.msg)} |")
+        level = f"💥 {e.level}".strip() if is_crash_start(e) else e.level
+        pkg = md_escape(packages.get(e.pid, ""))
+        lines.append(f"| {e.ts} | {level} | {pkg} | {md_escape(e.tag)} | {md_escape(e.msg)} |")
     return "\n".join(lines) + "\n"
 
 
@@ -2328,7 +2335,10 @@ class Catflap(App):
         now = datetime.now()
         path = d / export_filename(pkg, now)
         path.write_text(
-            export_markdown(entries, filters_desc, now.strftime("%Y-%m-%d %H:%M:%S")),
+            export_markdown(
+                entries, filters_desc, now.strftime("%Y-%m-%d %H:%M:%S"),
+                packages=self.pid_names,
+            ),
             encoding="utf-8",
         )
         self.notify(f"Exported {len(entries)} lines → {path}")

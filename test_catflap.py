@@ -408,10 +408,30 @@ class ExportTest(unittest.TestCase):
 
     def test_markdown_table(self):
         e = parse_line("06-12 10:33:21.123  1234  5678 D MyTag: hello | world")
-        out = export_markdown([e], "package=`*` tag=`*` message=`*`", "2026-06-12 14:33:21")
-        self.assertIn("| Time | Tag | Message |", out)
-        self.assertIn("| 06-12 10:33:21.123 | MyTag | hello \\| world |", out)
+        out = export_markdown(
+            [e], "package=`*` tag=`*` message=`*`", "2026-06-12 14:33:21",
+            packages={"1234": "com.x.app"},
+        )
+        # columns: Time | Level | Package | Tag | Message
+        self.assertIn("| Time | Level | Package | Tag | Message |", out)
+        self.assertIn("| 06-12 10:33:21.123 | D | com.x.app | MyTag | hello \\| world |", out)
         self.assertIn("- Lines: 1", out)
+
+    def test_markdown_package_blank_when_unknown(self):
+        # pid not in the map -> empty package cell, table still well-formed
+        e = parse_line("06-12 10:33:21.123  42  42 I MyTag: hi")
+        out = export_markdown([e], "f", "now")
+        self.assertIn("| 06-12 10:33:21.123 | I |  | MyTag | hi |", out)
+
+    def test_markdown_crash_mark(self):
+        fatal = parse_line("06-12 10:33:21.123  99  99 F libc: Fatal signal 11")
+        anr = parse_line("06-12 10:33:21.200  99  99 E AndroidRuntime: FATAL EXCEPTION: main")
+        normal = parse_line("06-12 10:33:21.300  99  99 E Other: just an error")
+        out = export_markdown([fatal, anr, normal], "f", "now", packages={"99": "com.x"})
+        self.assertIn("| 06-12 10:33:21.123 | 💥 F | com.x | libc | Fatal signal 11 |", out)
+        self.assertIn("| 06-12 10:33:21.200 | 💥 E | com.x | AndroidRuntime | FATAL EXCEPTION: main |", out)
+        # a non-crash error row keeps a plain level
+        self.assertIn("| 06-12 10:33:21.300 | E | com.x | Other | just an error |", out)
 
 
 class NotOperatorTest(unittest.TestCase):
