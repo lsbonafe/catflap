@@ -279,15 +279,16 @@ def _pred_holds(pred, fields):
 
 
 class Entry:
-    __slots__ = ("ts", "pid", "tid", "level", "tag", "msg")
+    __slots__ = ("ts", "pid", "tid", "level", "tag", "msg", "kind")
 
-    def __init__(self, ts, pid, tid, level, tag, msg):
+    def __init__(self, ts, pid, tid, level, tag, msg, kind=None):
         self.ts = ts
         self.pid = pid
         self.tid = tid
         self.level = level
         self.tag = tag
         self.msg = msg
+        self.kind = kind  # None for real logs; "proc" for synthetic process banners
 
 
 def parse_line(line):
@@ -338,6 +339,33 @@ def crash_block(entries, start_entry, limit=400):
         elif e.pid == start_entry.pid:
             break  # same process moved on to another tag — trace over
     return block
+
+
+def banner_diff(prev_live, cur_names, pid_names, f_pkg):
+    """Diff two ps polls into process STARTED/ENDED events for the filtered pkg.
+
+    prev_live  — set of pids that were live in the previous poll
+    cur_names  — {pid: package} from the current poll (live pids only)
+    pid_names  — the merged, never-removed map (resolves a dead pid's package)
+    f_pkg      — parsed package filter; empty -> no banners
+
+    Returns (started, ended), each a list of (pid, package). The caller is
+    responsible for skipping the very first poll (prev_live empty) so the whole
+    process table isn't dumped as STARTED banners on launch."""
+    if not f_pkg:
+        return [], []
+    cur_live = set(cur_names)
+    started = [
+        (pid, cur_names[pid])
+        for pid in cur_live - prev_live
+        if matches(cur_names[pid], f_pkg)
+    ]
+    ended = []
+    for pid in prev_live - cur_live:
+        pkg = pid_names.get(pid, "")  # dead pid: package from the never-removes map
+        if pkg and matches(pkg, f_pkg):
+            ended.append((pid, pkg))
+    return started, ended
 
 
 def md_escape(text):
@@ -614,6 +642,9 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/] — the query box
 
   the [b]package[/] box matches the process name; the [b]query[/] box matches
   [b]tag[/] + [b]message[/] (scope to one with [b $accent]tag:[/] / [b $accent]message:[/])
+
+  with a [b]package[/] filter set, a divider marks when that app's process
+  starts or dies: [b $accent]── PROCESS STARTED (pid) … ──[/] (so you can see restarts)
 
   the [b]Level[/] chip ([b]F2[/]) filters by severity — [b]≥[/] shows that level and worse,
   [b]=[/] shows exactly that level (switch modes inside the chip's menu)
@@ -1345,6 +1376,7 @@ class Catflap(App):
         self.buffer = deque(maxlen=BUFFER_MAX)
         self.queue = Queue()
         self.pid_names = {}
+        self._live_pids = set()  # live pids from the previous ps poll (mapper thread)
         self.f_pkg = []
         self.f_query = []
         self.shown = 0
@@ -1524,6 +1556,18 @@ class Catflap(App):
                     merged = dict(self.pid_names)
                     merged.update(names)
                     self.pid_names = merged
+                    # diff against the previous poll for process STARTED/ENDED
+                    # banners — but only once we have a baseline (skip first poll,
+                    # else the whole running process table floods as STARTED)
+                    if self._live_pids:
+                        started, ended = banner_diff(
+                            self._live_pids, names, self.pid_names, self.f_pkg
+                        )
+                        for pid, pkg in started:
+                            self.call_from_thread(self._emit_banner, pid, pkg, "STARTED")
+                        for pid, pkg in ended:
+                            self.call_from_thread(self._emit_banner, pid, pkg, "ENDED")
+                    self._live_pids = set(names)
             except Exception:
                 pass
             time.sleep(3)
@@ -1567,6 +1611,10 @@ class Catflap(App):
     # ---- filtering -----------------------------------------------------------
 
     def _entry_visible(self, e):
+        if e.kind == "proc":
+            # a process banner shows only while its package passes the package
+            # filter — re-evaluated every refresh, so it hides/reappears with it
+            return bool(self.f_pkg) and matches(self.pid_names.get(e.pid, ""), self.f_pkg)
         pkg = self.pid_names.get(e.pid, "")
         return (
             level_matches(e.level, self.min_level, self.level_exact)
@@ -1575,6 +1623,17 @@ class Catflap(App):
         )
 
     def _render(self, e, highlight=False):
+        if e.kind == "proc":
+            w = self.log_widget.size.width or 80
+            body = f" {e.msg} "
+            pad = max(0, (w - len(body)) // 2)
+            text = Text(
+                "─" * pad + body + "─" * max(0, w - pad - len(body)),
+                style=f"bold {self.theme_variables.get('accent', 'cyan')}",
+            )
+            if highlight:
+                text.stylize("reverse")
+            return text
         style = self.level_styles.get(e.level, "")
         pkg = self.pid_names.get(e.pid, e.pid)
         if len(pkg) > 28:
@@ -1593,6 +1652,26 @@ class Catflap(App):
         if highlight:
             text.stylize("reverse")
         return text
+
+    def _emit_banner(self, pid, pkg, which):
+        """Append a synthetic PROCESS STARTED/ENDED banner. Main thread only
+        (the mapper hands it over via call_from_thread). Mirrors _drain's tail
+        so pause / shown / status behave exactly like a real line."""
+        ms = int((time.time() % 1) * 1000)
+        ts = time.strftime("%m-%d %H:%M:%S") + f".{ms:03d}"
+        e = Entry(
+            ts=ts, pid=pid, tid="", level="", tag="proc",
+            msg=f"PROCESS {which} ({pid}) for package {pkg}", kind="proc",
+        )
+        self.buffer.append(e)
+        if not self._entry_visible(e):
+            return  # filter changed between the poll and this callback
+        if self.paused:
+            self._pending_lines += 1
+        else:
+            self.log_widget.write(self._render(e))
+            self.shown += 1
+            self._update_status()
 
     def _drain(self):
         visible = []
@@ -2106,7 +2185,9 @@ class Catflap(App):
             self._apply_filters_now()
 
     def _filtered_entries_for_export(self):
-        entries = [e for e in self.buffer if self._entry_visible(e)]
+        # exclude synthetic process banners — their empty level/tid would render
+        # as garbage in the markdown table and the raw "ts pid tid level tag:" line
+        entries = [e for e in self.buffer if e.kind != "proc" and self._entry_visible(e)]
         if not entries:
             self.notify("Nothing to export (no matching lines).", severity="warning")
         return entries

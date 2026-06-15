@@ -5,7 +5,9 @@ from unittest.mock import patch
 import catflap
 from catflap import (
     _pick_dump_serial,
+    banner_diff,
     crash_block,
+    Entry,
     export_filename,
     export_markdown,
     export_raw,
@@ -78,6 +80,75 @@ class MigrateQueryTest(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(catflap._migrate_query({}), "")
+
+
+class BannerDiffTest(unittest.TestCase):
+    FPKG = staticmethod(lambda: parse_terms("com.x"))
+
+    def test_started_when_pid_newly_present(self):
+        started, ended = banner_diff(
+            {"1"}, {"1": "com.x", "2": "com.x"}, {"1": "com.x", "2": "com.x"},
+            parse_terms("com.x"),
+        )
+        self.assertEqual(started, [("2", "com.x")])
+        self.assertEqual(ended, [])
+
+    def test_ended_when_pid_drops(self):
+        started, ended = banner_diff(
+            {"1", "2"}, {"1": "com.x"}, {"1": "com.x", "2": "com.x"},
+            parse_terms("com.x"),
+        )
+        self.assertEqual(started, [])
+        self.assertEqual(ended, [("2", "com.x")])
+
+    def test_empty_filter_yields_nothing(self):
+        self.assertEqual(
+            banner_diff({"1"}, {"1": "com.x", "2": "com.x"}, {}, []),
+            ([], []),
+        )
+
+    def test_filter_scopes_started(self):
+        # pid 2 belongs to a different package than the filter
+        started, ended = banner_diff(
+            {"1"}, {"1": "com.x", "2": "com.other"}, {}, parse_terms("com.x"),
+        )
+        self.assertEqual(started, [])
+        self.assertEqual(ended, [])
+
+    def test_ended_unknown_pkg_dropped(self):
+        # pid 9 ended but is absent from pid_names -> no package -> dropped
+        started, ended = banner_diff(
+            {"1", "9"}, {"1": "com.x"}, {"1": "com.x"}, parse_terms("com.x"),
+        )
+        self.assertEqual((started, ended), ([], []))
+
+    def test_pid_still_live_no_banner(self):
+        # same pid present both polls -> nothing (documents the pid-reuse gap)
+        self.assertEqual(
+            banner_diff({"1"}, {"1": "com.x"}, {"1": "com.x"}, parse_terms("com.x")),
+            ([], []),
+        )
+
+
+class BannerEntryTest(unittest.TestCase):
+    def test_entry_default_kind_none(self):
+        self.assertIsNone(Entry("ts", "1", "1", "D", "Tag", "msg").kind)
+        self.assertIsNone(parse_line("06-12 10:00:00.001  1  1 D Tag: hi").kind)
+
+    def test_proc_entry_kind(self):
+        e = Entry("ts", "1", "", "", "proc", "PROCESS STARTED (1)", kind="proc")
+        self.assertEqual(e.kind, "proc")
+
+    def test_export_omits_banner_text(self):
+        # even if a banner somehow reaches the pure exporters, the table row is
+        # benign (no crash) — the real guard is _filtered_entries_for_export,
+        # but assert the exporters don't blow up on empty level/tid
+        banner = Entry("06-12 10:00:00.000", "1", "", "", "proc",
+                       "PROCESS STARTED (1) for package com.x", kind="proc")
+        md = export_markdown([banner], "f", "now")
+        raw = export_raw([banner])
+        self.assertIn("PROCESS STARTED", md)   # it renders, doesn't crash
+        self.assertIn("PROCESS STARTED", raw)
 
 
 class ParseQueryTest(unittest.TestCase):

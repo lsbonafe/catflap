@@ -229,6 +229,128 @@ class PauseFlow(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.shown, before + 1)
 
 
+def _procs(app):
+    return [e for e in app.buffer if e.kind == "proc"]
+
+
+def _visible_procs(app):
+    return [e for e in _procs(app) if app._entry_visible(e)]
+
+
+class ProcessBannerFlow(unittest.IsolatedAsyncioTestCase):
+    async def test_started_and_ended_banners(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"42": "com.x.app"}
+            app.query_one("#pkg").value = "com.x"
+            await pilot.pause(0.4)
+            before = app.shown
+            app._emit_banner("42", "com.x.app", "STARTED")
+            await pilot.pause(0.1)
+            procs = _procs(app)
+            self.assertEqual(len(procs), 1)
+            self.assertIn("PROCESS STARTED (42) for package com.x.app", procs[0].msg)
+            self.assertEqual(app.shown, before + 1)
+            app._emit_banner("42", "com.x.app", "ENDED")
+            await pilot.pause(0.1)
+            self.assertEqual(len(_procs(app)), 2)
+            self.assertIn("PROCESS ENDED (42)", _procs(app)[1].msg)
+            self.assertEqual(app.shown, before + 2)
+
+    async def test_empty_filter_no_banner(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"42": "com.x.app"}
+            # package box empty -> the diff path produces nothing
+            started, ended = catflap.banner_diff(
+                {"1"}, {"1": "com.x.app", "42": "com.x.app"}, app.pid_names, app.f_pkg
+            )
+            self.assertEqual((started, ended), ([], []))
+            self.assertEqual(_procs(app), [])
+
+    async def test_package_filter_change_hides_and_reshows(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"42": "com.x.app"}
+            app.query_one("#pkg").value = "com.x"
+            await pilot.pause(0.4)
+            app._emit_banner("42", "com.x.app", "STARTED")
+            await pilot.pause(0.1)
+            self.assertEqual(len(_visible_procs(app)), 1)
+            self.assertEqual(app.shown, 1)
+            # switch package -> banner stays in buffer but is hidden & uncounted
+            app.query_one("#pkg").value = "com.y"
+            await pilot.pause(0.4)
+            self.assertEqual(len(_procs(app)), 1)        # still buffered
+            self.assertEqual(len(_visible_procs(app)), 0)  # not shown
+            self.assertEqual(app.shown, 0)
+            # switch back -> reappears and re-counts
+            app.query_one("#pkg").value = "com.x"
+            await pilot.pause(0.4)
+            self.assertEqual(len(_visible_procs(app)), 1)
+            self.assertEqual(app.shown, 1)
+
+    async def test_pause_buffers_banner_then_resume(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"42": "com.x.app"}
+            app.query_one("#pkg").value = "com.x"
+            await pilot.pause(0.4)
+            await pilot.press("ctrl+s")  # pause
+            app._emit_banner("42", "com.x.app", "STARTED")
+            await pilot.pause(0.2)
+            self.assertTrue(app.paused)
+            self.assertEqual(app.shown, 0)
+            self.assertEqual(app._pending_lines, 1)
+            await pilot.press("ctrl+s")  # resume
+            await pilot.pause(0.3)
+            self.assertEqual(len(_visible_procs(app)), 1)
+            self.assertEqual(app.shown, 1)
+
+    async def test_export_excludes_banner(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"42": "com.x.app"}
+            app.query_one("#pkg").value = "com.x"
+            await pilot.pause(0.4)
+            app.queue.put(line(0, pid=42, tag="Foo", msg="real line"))
+            await pilot.pause(0.3)
+            app._emit_banner("42", "com.x.app", "STARTED")
+            await pilot.pause(0.1)
+            entries = app._filtered_entries_for_export()
+            self.assertTrue(all(e.kind != "proc" for e in entries))
+            raw = catflap.export_raw(entries)
+            self.assertIn("real line", raw)
+            self.assertNotIn("PROCESS STARTED", raw)
+
+    async def test_search_finds_banner_anchor(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"42": "com.x.app"}
+            app.query_one("#pkg").value = "com.x"
+            await pilot.pause(0.4)
+            app._emit_banner("42", "com.x.app", "STARTED")
+            await pilot.pause(0.1)
+            await pilot.press("/")  # open search
+            await pilot.pause(0.1)
+            app.query_one("#searchbar", Input).value = "PROCESS"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            self.assertTrue(app._search_matches)  # banner is a searchable anchor
+
+
 class PresetsAndPersistence(unittest.IsolatedAsyncioTestCase):
     async def test_preset_roundtrip_and_state_file(self):
         tmp = isolate_state()
