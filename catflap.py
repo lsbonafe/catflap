@@ -278,6 +278,41 @@ def _pred_holds(pred, fields):
     return hit != negated
 
 
+def highlight_patterns(clauses):
+    """From a parsed query, the compiled patterns to highlight in each field.
+
+    Returns (tag_pats, msg_pats). Only positive (non-negated) predicates
+    contribute — you can't highlight the absence of a term. A bare 'any' term
+    highlights in both fields, so the colour shows which field the hit is in.
+    Exact predicates (anchored ^…$) are de-anchored so the visible substring
+    still highlights."""
+    tag_pats, msg_pats = [], []
+    seen_tag, seen_msg = set(), set()
+    for clause in clauses:
+        for field, op, pat, negated in clause:
+            if negated:
+                continue
+            hl = _deanchor(pat) if op == "exact" else pat
+            if field in ("tag", "any") and hl.pattern not in seen_tag:
+                seen_tag.add(hl.pattern)
+                tag_pats.append(hl)
+            if field in ("msg", "any") and hl.pattern not in seen_msg:
+                seen_msg.add(hl.pattern)
+                msg_pats.append(hl)
+    return tag_pats, msg_pats
+
+
+def _deanchor(pat):
+    """Strip ^…$ from an exact predicate so the literal still highlights."""
+    src = pat.pattern
+    if src.startswith("^") and src.endswith("$"):
+        src = src[1:-1]
+    try:
+        return re.compile(src, re.IGNORECASE)
+    except re.error:
+        return pat
+
+
 class Entry:
     __slots__ = ("ts", "pid", "tid", "level", "tag", "msg", "kind")
 
@@ -1397,6 +1432,7 @@ class Catflap(App):
         self._live_pids = set()  # live pids from the previous ps poll (mapper thread)
         self.f_pkg = []
         self.f_query = []
+        self._hl_patterns = ([], [])  # (tag_patterns, msg_patterns) for log highlights
         self.shown = 0
         self._stop = threading.Event()
         self._proc = None
@@ -1467,6 +1503,12 @@ class Catflap(App):
         QueryHighlighter.op_style = f"bold {v.get('primary', 'magenta')}"
         QueryHighlighter.regex_style = f"italic {v.get('secondary', 'cyan')}"
         QueryHighlighter.key_style = f"bold {v.get('accent', 'cyan')}"
+        # filter-match highlights in the log: theme colors used with `reverse`,
+        # which paints the term as a colored background with auto-contrasting
+        # text (readable on light or dark themes). accent vs primary are the two
+        # most visually distinct palette colors not already used as backgrounds.
+        self.tag_hl_style = f"reverse bold {v.get('accent', 'cyan')}"
+        self.msg_hl_style = f"reverse bold {v.get('primary', 'magenta')}"
 
     def _on_theme_change(self, _theme):
         self._rebuild_theme_styles()
@@ -1656,6 +1698,16 @@ class Catflap(App):
         pkg = self.pid_names.get(e.pid, e.pid)
         if len(pkg) > 28:
             pkg = "…" + pkg[-27:]
+        # build tag/msg as their own fragments so filter-match highlighting is
+        # scoped to the right field (and only the matched substring, not the
+        # whole field) before assembling the line
+        tag_frag = Text(e.tag, style="bold")
+        msg_frag = Text(e.msg, style=style if e.level in ("E", "F", "W") else "")
+        tag_pats, msg_pats = self._hl_patterns
+        for p in tag_pats:
+            tag_frag.highlight_regex(p, self.tag_hl_style)
+        for p in msg_pats:
+            msg_frag.highlight_regex(p, self.msg_hl_style)
         text = Text.assemble(
             (e.ts, "dim"),
             "  ",
@@ -1663,9 +1715,9 @@ class Catflap(App):
             " ",
             (e.level, style or "bold"),
             "  ",
-            (e.tag, "bold"),
+            tag_frag,
             ": ",
-            (e.msg, style if e.level in ("E", "F", "W") else ""),
+            msg_frag,
         )
         if highlight:
             text.stylize("reverse")
@@ -1955,6 +2007,7 @@ class Catflap(App):
         """Parse both boxes and re-render. Shared by the debounce and Enter."""
         self.f_pkg = parse_terms(self.query_one("#pkg", Input).value)
         self.f_query = parse_query(self.query_one("#query", Input).value)
+        self._hl_patterns = highlight_patterns(self.f_query)
         self._state["filters"] = self._current_filters()
         self._refresh_view()
 

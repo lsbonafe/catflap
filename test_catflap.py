@@ -9,6 +9,7 @@ from catflap import (
     crash_block,
     crash_package,
     Entry,
+    highlight_patterns,
     export_filename,
     export_markdown,
     export_raw,
@@ -81,6 +82,44 @@ class MigrateQueryTest(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(catflap._migrate_query({}), "")
+
+
+class HighlightPatternsTest(unittest.TestCase):
+    def _pats(self, query):
+        tp, mp = highlight_patterns(parse_query(query))
+        return [p.pattern for p in tp], [p.pattern for p in mp]
+
+    def test_bare_term_highlights_both_fields(self):
+        self.assertEqual(self._pats("contain"), (["contain"], ["contain"]))
+
+    def test_scoped_terms_split_by_field(self):
+        self.assertEqual(self._pats("tag:Ads message:fill"), (["Ads"], ["fill"]))
+
+    def test_negated_terms_excluded(self):
+        # -tag:gc contributes nothing; the positive message term still shows
+        self.assertEqual(self._pats("-tag:gc message:ok"), ([], ["ok"]))
+
+    def test_exact_is_deanchored(self):
+        # tag=:Foo compiles to ^Foo$ but highlights the bare substring
+        self.assertEqual(self._pats("tag=:Foo"), (["Foo"], []))
+
+    def test_package_term_does_not_highlight_tag_or_msg(self):
+        self.assertEqual(self._pats("package:com.x"), ([], []))
+
+    def test_empty_query_no_patterns(self):
+        self.assertEqual(highlight_patterns([]), ([], []))
+
+    def test_dedupes_repeated_term(self):
+        # same term in two OR clauses -> one pattern per field
+        tp, mp = highlight_patterns(parse_query("fill OR fill"))
+        self.assertEqual(len(mp), 1)
+        self.assertEqual(len(tp), 1)
+
+    def test_highlight_only_matched_substring(self):
+        # the highlight pattern matches just "contain", not the whole field
+        tp, _ = highlight_patterns(parse_query("tag:contain"))
+        spans = list(tp[0].finditer("contain that"))
+        self.assertEqual([s.group() for s in spans], ["contain"])
 
 
 class BannerDiffTest(unittest.TestCase):

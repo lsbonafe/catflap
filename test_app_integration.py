@@ -88,6 +88,35 @@ class FilteringFlow(unittest.IsolatedAsyncioTestCase):
                     app.query_one(box_id).highlighter, QueryHighlighter
                 )
 
+    async def test_matched_terms_highlighted_in_log(self):
+        """tag: and message: matches paint their substrings with distinct,
+        field-scoped styles — and only the matched substring."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"42": "com.x.app"}
+            app.queue.put(line(0, pid=42, lvl="I", tag="AdsManager",
+                               msg="contain that and fill"))
+            await pilot.pause(0.3)
+            app.query_one("#query").value = "tag:Ads message:fill"
+            await pilot.pause(0.4)
+            e = next(x for x in app.buffer if x.kind != "proc")
+            text = app._render(e)
+            plain = text.plain
+            # collect (substring, style_str) for spans that carry a highlight
+            tag_hl, msg_hl = [], []
+            for span in text.spans:
+                seg = plain[span.start:span.end]
+                style = str(span.style)
+                if style == app.tag_hl_style:
+                    tag_hl.append(seg)
+                elif style == app.msg_hl_style:
+                    msg_hl.append(seg)
+            self.assertEqual(tag_hl, ["Ads"])   # only "Ads", not the whole tag
+            self.assertEqual(msg_hl, ["fill"])  # only "fill", not the whole msg
+            self.assertNotEqual(app.tag_hl_style, app.msg_hl_style)  # distinct
+
     async def test_tab_reaches_level_chip_and_enter_opens_menu(self):
         isolate_state()
         app = make_app()
