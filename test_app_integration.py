@@ -57,7 +57,7 @@ class FilteringFlow(unittest.IsolatedAsyncioTestCase):
             app.set_min_level("I")  # drops only the D line
             await pilot.pause(0.3)
             self.assertEqual(app.shown, 2)
-            app.query_one("#msg").value = "ad AND NOT slow"
+            app.query_one("#query").value = "message:ad AND -message:slow"
             await pilot.pause(0.4)
             self.assertEqual(app.shown, 1)
 
@@ -66,13 +66,13 @@ class FilteringFlow(unittest.IsolatedAsyncioTestCase):
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.2)
-            box = app.query_one("#tag")
-            clear = app.query_one("#clear-tag")
+            box = app.query_one("#query")
+            clear = app.query_one("#clear-query")
             self.assertFalse(clear.display)
             box.value = "TeadsSDK"
             await pilot.pause(0.4)
             self.assertTrue(clear.display)
-            await pilot.click("#clear-tag")
+            await pilot.click("#clear-query")
             await pilot.pause(0.4)
             self.assertEqual(box.value, "")
             self.assertFalse(clear.display)
@@ -83,30 +83,91 @@ class FilteringFlow(unittest.IsolatedAsyncioTestCase):
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.2)
-            for box_id in ("#pkg", "#tag", "#msg"):
+            for box_id in ("#pkg", "#query"):
                 self.assertIsInstance(
                     app.query_one(box_id).highlighter, QueryHighlighter
                 )
 
+    async def test_tab_reaches_level_chip_and_enter_opens_menu(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.set_focus(app.query_one("#pkg", Input))
+            await pilot.pause(0.05)
+            order = [getattr(app.focused, "id", None)]
+            for _ in range(2):  # two tabs: pkg -> query -> minlevel
+                await pilot.press("tab")
+                await pilot.pause(0.05)
+                order.append(getattr(app.focused, "id", None))
+            self.assertEqual(order, ["pkg", "query", "minlevel"])
+            # Enter on the now-focused chip opens the level menu
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+            self.assertTrue(app.level_menu.display)
+
 
 class AutocompleteFlow(unittest.IsolatedAsyncioTestCase):
-    async def test_suggest_select_and_or_segment(self):
+    async def test_bare_term_suggests_reserved_form(self):
+        """A bare word matching a known tag is offered as tag:<value>."""
         isolate_state()
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.2)
             for tag in ("InterstitialDebug", "TeadsSDK", "WindowManager"):
                 app.tag_count[tag] += 1
-            box = app.query_one("#tag")
+            box = app.query_one("#query")
             app.set_focus(box)
-            box.value = "TeadsSDK OR NOT win"
+            box.value = "win"
             box.cursor_position = len(box.value)
             await pilot.pause(0.4)
-            self.assertEqual(app._suggest_values, ["WindowManager"])
+            # the promotion replacement scopes the bare term to tag:
+            self.assertIn("tag:WindowManager", app._suggest_values)
             await pilot.press("down", "enter")
             await pilot.pause(0.4)
-            self.assertEqual(box.value, "TeadsSDK OR NOT WindowManager")
+            self.assertEqual(box.value, "tag:WindowManager")
             self.assertFalse(app.suggest_list.display)
+
+    async def test_scoped_key_completes_field_values(self):
+        """Typing tag:Win completes from the tag candidates, keeping the key."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            for tag in ("WindowManager", "WifiService"):
+                app.tag_count[tag] += 1
+            box = app.query_one("#query")
+            app.set_focus(box)
+            box.value = "message:foo tag:Win"
+            box.cursor_position = len(box.value)
+            await pilot.pause(0.4)
+            self.assertEqual(app._suggest_values, ["message:foo tag:WindowManager"])
+            await pilot.press("down", "enter")
+            await pilot.pause(0.4)
+            self.assertEqual(box.value, "message:foo tag:WindowManager")
+
+    async def test_enter_submits_query_as_typed(self):
+        """Enter applies the filter immediately and dismisses the dropdown —
+        without forcing the user to pick a suggestion."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.tag_count["AdsManager"] += 5  # makes the dropdown open on "Ads"
+            app.queue.put(line(0, lvl="E", tag="AdsManager", msg="no fill"))
+            app.queue.put(line(1, lvl="I", tag="Choreographer", msg="frame"))
+            await pilot.pause(0.3)
+            box = app.query_one("#query")
+            app.set_focus(box)
+            box.value = "Ads"
+            box.cursor_position = len(box.value)
+            await pilot.pause(0.4)
+            self.assertTrue(app.suggest_list.display)  # suggestions are showing
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            self.assertFalse(app.suggest_list.display)  # Enter dismissed them
+            self.assertEqual(box.value, "Ads")          # text kept as typed
+            self.assertEqual(app.shown, 1)              # filter applied
 
 
 class CrashFlow(unittest.IsolatedAsyncioTestCase):
@@ -171,28 +232,42 @@ class PresetsAndPersistence(unittest.IsolatedAsyncioTestCase):
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.2)
-            app.query_one("#msg").value = "timeout"
+            app.query_one("#query").value = "message:timeout"
             await pilot.pause(0.4)
             app._state.setdefault("presets", {})["mine"] = app._current_filters()
-            app.query_one("#msg").value = ""
+            app.query_one("#query").value = ""
             await pilot.pause(0.4)
             app._apply_filter_dict(app._state["presets"]["mine"])
             await pilot.pause(0.4)
-            self.assertEqual(app.query_one("#msg").value, "timeout")
+            self.assertEqual(app.query_one("#query").value, "message:timeout")
         saved = json.loads(tmp.read_text())
-        self.assertEqual(saved["filters"]["msg"], "timeout")
-        self.assertEqual(saved["presets"]["mine"]["msg"], "timeout")
+        self.assertEqual(saved["filters"]["query"], "message:timeout")
+        self.assertEqual(saved["presets"]["mine"]["query"], "message:timeout")
 
     async def test_filters_restored_on_launch(self):
         tmp = isolate_state()
         tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({"filters": {"tag": "TeadsSDK", "errors": True}}))
+        tmp.write_text(json.dumps({"filters": {"query": "tag:TeadsSDK", "errors": True}}))
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.4)
-            self.assertEqual(app.query_one("#tag").value, "TeadsSDK")
+            self.assertEqual(app.query_one("#query").value, "tag:TeadsSDK")
             # legacy "errors only" state maps onto the level selector
             self.assertEqual(app.min_level, "E")
+
+    async def test_legacy_tag_msg_preset_migrates(self):
+        """Old two-box presets fold into the unified query on load."""
+        tmp = isolate_state()
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({
+            "filters": {"tag": "TeadsSDK", "msg": "timeout"},
+        }))
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.4)
+            self.assertEqual(
+                app.query_one("#query").value, "tag:TeadsSDK AND message:timeout"
+            )
 
     async def test_theme_and_wrap_persist(self):
         tmp = isolate_state()

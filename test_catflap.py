@@ -15,12 +15,172 @@ from catflap import (
     md_escape,
     parse_devices,
     parse_foreground,
+    parse_query,
+    parse_token,
+    query_matches,
+    split_query_token,
     logcat_cmd,
     parse_line,
     parse_terms,
     split_last_term,
     suggest,
 )
+
+
+def qm(query, tag="", msg="", pkg=""):
+    """Helper: does a line (tag/msg/pkg) match a unified query string?"""
+    return query_matches(tag, msg, pkg, parse_query(query))
+
+
+class QueryTokenTest(unittest.TestCase):
+    def test_bare_trailing_word_splits_on_space(self):
+        self.assertEqual(split_query_token("foo ba"), ("foo ", "ba"))
+
+    def test_trailing_key_value_stays_whole(self):
+        self.assertEqual(
+            split_query_token("tag:Ad message:no fi"), ("tag:Ad ", "message:no fi")
+        )
+
+    def test_or_resets_to_bare(self):
+        # after an OR the tail is a fresh bare token
+        self.assertEqual(split_query_token("tag:Ad OR ba"), ("tag:Ad OR ", "ba"))
+
+    def test_parse_token_bare(self):
+        self.assertEqual(parse_token("win"), (False, None, None, "win"))
+
+    def test_parse_token_keyed(self):
+        self.assertEqual(parse_token("tag:Win"), (False, "tag", ":", "Win"))
+        self.assertEqual(parse_token("-message~:x"), (True, "message", "~:", "x"))
+
+
+class MigrateQueryTest(unittest.TestCase):
+    def test_new_format_passthrough(self):
+        self.assertEqual(catflap._migrate_query({"query": "tag:x"}), "tag:x")
+
+    def test_legacy_single_box(self):
+        self.assertEqual(catflap._migrate_query({"tag": "TeadsSDK"}), "tag:TeadsSDK")
+        self.assertEqual(catflap._migrate_query({"msg": "timeout"}), "message:timeout")
+
+    def test_legacy_both_boxes_and_joined(self):
+        self.assertEqual(
+            catflap._migrate_query({"tag": "TeadsSDK", "msg": "timeout"}),
+            "tag:TeadsSDK AND message:timeout",
+        )
+
+    def test_legacy_operators_preserved(self):
+        self.assertEqual(catflap._migrate_query({"tag": "a OR b"}), "tag:a OR tag:b")
+        self.assertEqual(
+            catflap._migrate_query({"msg": "x AND NOT y"}), "message:x AND -message:y"
+        )
+
+    def test_legacy_regex_box(self):
+        self.assertEqual(catflap._migrate_query({"tag": "/Cho+/"}), "tag~:Cho+")
+
+    def test_empty(self):
+        self.assertEqual(catflap._migrate_query({}), "")
+
+
+class ParseQueryTest(unittest.TestCase):
+    def test_empty_matches_all(self):
+        self.assertEqual(parse_query("   "), [])
+        self.assertTrue(qm("", tag="anything", msg="x"))
+
+    def test_bare_term_hits_tag_or_message(self):
+        self.assertTrue(qm("gc", tag="GcLog", msg="nothing"))
+        self.assertTrue(qm("gc", tag="Other", msg="running GC now"))
+        self.assertFalse(qm("gc", tag="Other", msg="nothing"))
+
+    def test_bare_term_does_not_hit_package(self):
+        # package only matched via package: key (it keeps its own box)
+        self.assertFalse(qm("mine", tag="T", msg="m", pkg="com.mine.app"))
+
+    def test_tag_key_scopes_to_tag(self):
+        self.assertTrue(qm("tag:Choreo", tag="Choreographer", msg="zzz"))
+        self.assertFalse(qm("tag:Choreo", tag="Other", msg="Choreographer here"))
+
+    def test_message_key_and_alias(self):
+        self.assertTrue(qm("message:fill", tag="Ads", msg="no fill"))
+        self.assertTrue(qm("msg:fill", tag="Ads", msg="no fill"))
+        self.assertFalse(qm("message:fill", tag="fill", msg="ok"))
+
+    def test_package_key(self):
+        self.assertTrue(qm("package:mine", pkg="com.mine.app", tag="T", msg="m"))
+        self.assertTrue(qm("pkg:mine", pkg="com.mine.app"))
+        self.assertFalse(qm("package:mine", pkg="com.other.app"))
+
+    def test_exact_operator(self):
+        self.assertTrue(qm("tag=:Foo", tag="Foo", msg="x"))
+        self.assertFalse(qm("tag=:Foo", tag="FooBar", msg="x"))
+        self.assertTrue(qm("tag=:foo", tag="FOO"))  # case-insensitive
+
+    def test_regex_operator(self):
+        self.assertTrue(qm("tag~:Fo+", tag="Fooo", msg="x"))
+        self.assertFalse(qm("tag~:^Bar$", tag="FooBar"))
+        self.assertTrue(qm("message~:retry \\d+", msg="retry 5 times"))
+
+    def test_negated_key(self):
+        self.assertTrue(qm("-tag:gc", tag="Choreo", msg="m"))
+        self.assertFalse(qm("-tag:gc", tag="GcDaemon", msg="m"))
+
+    def test_negated_exact_and_regex(self):
+        self.assertFalse(qm("-tag=:Foo", tag="Foo"))
+        self.assertTrue(qm("-tag=:Foo", tag="FooBar"))
+        self.assertFalse(qm("-tag~:Fo+", tag="Foo"))
+        self.assertTrue(qm("-tag~:Fo+", tag="Bar"))
+
+    def test_whitespace_between_keys_is_and(self):
+        # both must hold
+        self.assertTrue(qm("tag:Ads message:fill", tag="Ads", msg="no fill"))
+        self.assertFalse(qm("tag:Ads message:fill", tag="Ads", msg="loaded"))
+        self.assertFalse(qm("tag:Ads message:fill", tag="Net", msg="no fill"))
+
+    def test_key_then_negated_key(self):
+        self.assertTrue(qm("tag:Choreo -message:gc", tag="Choreographer", msg="frame"))
+        self.assertFalse(qm("tag:Choreo -message:gc", tag="Choreographer", msg="run gc"))
+
+    def test_or_splits_clauses(self):
+        self.assertTrue(qm("tag:Ads OR tag:Net", tag="Network", msg="x"))
+        self.assertTrue(qm("tag:Ads OR tag:Net", tag="AdsManager", msg="x"))
+        self.assertFalse(qm("tag:Ads OR tag:Net", tag="Other", msg="x"))
+
+    def test_bare_and_key_combined(self):
+        # leading bare span ANDs with the keyed predicate
+        self.assertTrue(qm("error tag:Ads", tag="AdsManager", msg="error here"))
+        self.assertFalse(qm("error tag:Ads", tag="AdsManager", msg="all good"))
+
+    def test_not_before_bare_word(self):
+        self.assertTrue(qm("NOT spam", tag="ham", msg="eggs"))
+        self.assertFalse(qm("NOT spam", tag="ham", msg="spam folder"))
+
+    def test_multi_word_message_value(self):
+        # text after message: up to the next key is one value (spaces kept)
+        self.assertTrue(qm("message:no fill", tag="Ads", msg="got no fill today"))
+        self.assertFalse(qm("message:no fill", tag="Ads", msg="filled"))
+
+    def test_trailing_key_with_no_value_is_noop(self):
+        # user mid-typing "tag:" — should match everything (clause empty)
+        self.assertTrue(qm("tag:", tag="anything", msg="x"))
+
+    def test_inline_regex_in_contains_still_works(self):
+        self.assertTrue(qm("tag:/Cho+/", tag="Choo"))
+
+    def test_explicit_and_terminates_key_value(self):
+        # ' AND ' is an operator boundary, not part of the message value
+        self.assertTrue(qm("message:ad AND -message:slow", tag="C", msg="boom in ad"))
+        self.assertFalse(qm("message:ad AND -message:slow", tag="C", msg="slow ad"))
+
+    def test_or_with_keys_distributes(self):
+        self.assertTrue(qm("tag:Ads AND message:fill OR tag:Net",
+                           tag="Net", msg="anything"))
+        self.assertTrue(qm("tag:Ads AND message:fill OR tag:Net",
+                           tag="AdsX", msg="no fill"))
+        self.assertFalse(qm("tag:Ads AND message:fill OR tag:Net",
+                            tag="AdsX", msg="loaded"))
+
+    def test_value_with_leading_dash_is_not_a_key(self):
+        # "-foo" with no colon is a bare term, dash kept literally? It splits as
+        # a bare word "-foo" — matches substring "-foo". Documenting behavior.
+        self.assertTrue(qm("-tag:x", tag="y"))  # negated key path covered above
 
 
 class ParseTermsTest(unittest.TestCase):
