@@ -7,6 +7,7 @@ from catflap import (
     _pick_dump_serial,
     banner_diff,
     crash_block,
+    crash_package,
     Entry,
     export_filename,
     export_markdown,
@@ -457,6 +458,18 @@ class CrashTest(unittest.TestCase):
         e = self._e("06-12 10:00:00.000  42  42 E AndroidRuntime: FATAL EXCEPTION: main")
         self.assertEqual(crash_block([], e), [])
 
+    def test_crash_package_from_process_line(self):
+        block = [
+            self._e("06-15 12:37:38.542 3225 3225 E AndroidRuntime: FATAL EXCEPTION: main"),
+            self._e("06-15 12:37:38.542 3225 3225 E AndroidRuntime: Process: com.google.android.odad, PID: 3225"),
+            self._e("06-15 12:37:38.542 3225 3225 E AndroidRuntime: \tat android.app.ActivityThread.main(ActivityThread.java:9333)"),
+        ]
+        self.assertEqual(crash_package(block), "com.google.android.odad")
+
+    def test_crash_package_none_when_absent(self):
+        block = [self._e("06-12 10:00:00.000  42  42 F libc: aborting")]
+        self.assertIsNone(crash_package(block))
+
 
 class ExportRawTest(unittest.TestCase):
     def test_round_trips_line(self):
@@ -522,6 +535,17 @@ class LogcatCmdTest(unittest.TestCase):
             logcat_cmd("abc", ["crash", "events"]),
             ["adb", "-s", "abc", "logcat", "-v", "threadtime", "-b", "crash", "-b", "events"],
         )
+
+    def test_tail_starts_from_now(self):
+        # the live TUI starts from now (-T 1) so old crashes don't replay
+        self.assertEqual(
+            logcat_cmd("abc", tail=True),
+            ["adb", "-s", "abc", "logcat", "-v", "threadtime", "-T", "1"],
+        )
+
+    def test_no_tail_by_default(self):
+        # the CLI dump path keeps reading the whole buffer
+        self.assertNotIn("-T", logcat_cmd("abc"))
 
 
 class ParseForegroundTest(unittest.TestCase):

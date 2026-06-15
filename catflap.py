@@ -341,6 +341,20 @@ def crash_block(entries, start_entry, limit=400):
     return block
 
 
+PROCESS_LINE_RE = re.compile(r"Process:\s*([\w.]+),\s*PID:")
+
+
+def crash_package(block):
+    """Package name from a crash block's 'Process: <pkg>, PID:' line, or None.
+    The Android runtime prints this line in every FATAL EXCEPTION, so it's a
+    reliable fallback when the pid isn't in the live pid->name map yet."""
+    for e in block:
+        m = PROCESS_LINE_RE.search(e.msg)
+        if m:
+            return m.group(1)
+    return None
+
+
 def banner_diff(prev_live, cur_names, pid_names, f_pkg):
     """Diff two ps polls into process STARTED/ENDED events for the filtered pkg.
 
@@ -553,9 +567,13 @@ def avd_name(serial):
     return ""
 
 
-def logcat_cmd(serial, buffers=None):
-    """adb logcat command line; buffers=None streams adb's default (main+system)."""
+def logcat_cmd(serial, buffers=None, tail=False):
+    """adb logcat command line; buffers=None streams adb's default (main+system).
+    tail=True starts from now (-T 1) instead of replaying the whole buffer — so
+    the live TUI doesn't re-surface old crashes/lines on every restart."""
     cmd = ["adb", "-s", serial, "logcat", "-v", "threadtime"]
+    if tail:
+        cmd += ["-T", "1"]
     for b in buffers or ():
         cmd += ["-b", b]
     return cmd
@@ -1512,7 +1530,7 @@ class Catflap(App):
                 continue
             try:
                 proc = subprocess.Popen(
-                    logcat_cmd(serial, buffers),
+                    logcat_cmd(serial, buffers, tail=True),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     text=True,
@@ -2298,7 +2316,10 @@ class Catflap(App):
         if not block:
             self.notify("Last crash scrolled out of the buffer.", severity="warning")
             return
-        pkg = self.pid_names.get(start.pid, f"pid {start.pid}")
+        # prefer the live pid->name map; fall back to the crash's own
+        # "Process: <pkg>, PID:" line (present in every FATAL EXCEPTION) so the
+        # package shows even when ps hasn't mapped the pid yet
+        pkg = self.pid_names.get(start.pid) or crash_package(block) or "(unknown)"
         err_style = self.level_styles.get("E", "red")
         # lead with a package/pid header so it travels with the copied text
         header = Text.assemble(

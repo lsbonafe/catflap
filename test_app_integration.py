@@ -198,6 +198,25 @@ class CrashFlow(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.4)
             self.assertEqual(app.shown, 2)
 
+    async def test_unmapped_pid_resolves_package_from_process_line(self):
+        """When ps hasn't mapped the crashing pid, the package comes from the
+        crash's own 'Process: <pkg>, PID:' line — never 'pid <n>'."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {}  # pid 3225 is unmapped
+            app.queue.put(line(0, pid=3225, lvl="E", tag="AndroidRuntime",
+                               msg="FATAL EXCEPTION: main"))
+            app.queue.put(line(1, pid=3225, lvl="E", tag="AndroidRuntime",
+                               msg="Process: com.google.android.odad, PID: 3225"))
+            await pilot.pause(0.3)
+            await pilot.press("ctrl+g")
+            await pilot.pause(0.2)
+            body = app.screen.query_one("#viewer-scroll Static").render().plain
+            self.assertIn("package: com.google.android.odad", body)
+            self.assertNotIn("package: pid 3225", body)
+
     async def test_no_crash_toast(self):
         isolate_state()
         app = make_app()
