@@ -36,7 +36,7 @@ def isolate_state():
 LINE = "06-12 10:00:00.{ms:03d}  {pid}  {pid} {lvl} {tag}: {msg}"
 
 
-def line(ms=0, pid=42, lvl="D", tag="Teads", msg="hello"):
+def line(ms=0, pid=42, lvl="D", tag="Acme", msg="hello"):
     return LINE.format(ms=ms, pid=pid, lvl=lvl, tag=tag, msg=msg)
 
 
@@ -69,7 +69,7 @@ class FilteringFlow(unittest.IsolatedAsyncioTestCase):
             box = app.query_one("#query")
             clear = app.query_one("#clear-query")
             self.assertFalse(clear.display)
-            box.value = "TeadsSDK"
+            box.value = "AcmeSDK"
             await pilot.pause(0.4)
             self.assertTrue(clear.display)
             await pilot.click("#clear-query")
@@ -114,7 +114,7 @@ class AutocompleteFlow(unittest.IsolatedAsyncioTestCase):
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.2)
-            for tag in ("InterstitialDebug", "TeadsSDK", "WindowManager"):
+            for tag in ("InterstitialDebug", "AcmeSDK", "WindowManager"):
                 app.tag_count[tag] += 1
             box = app.query_one("#query")
             app.set_focus(box)
@@ -176,7 +176,7 @@ class CrashFlow(unittest.IsolatedAsyncioTestCase):
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.2)
-            app.pid_names = {"42": "com.teads.sample"}
+            app.pid_names = {"42": "com.acme.sample"}
             app.queue.put(line(0, lvl="E", tag="AndroidRuntime", msg="FATAL EXCEPTION: main"))
             app.queue.put(line(1, lvl="E", tag="AndroidRuntime", msg="java.lang.NullPointerException"))
             await pilot.pause(0.3)
@@ -184,6 +184,9 @@ class CrashFlow(unittest.IsolatedAsyncioTestCase):
             await pilot.press("ctrl+g")
             await pilot.pause(0.2)
             self.assertIsInstance(app.screen, TextViewerScreen)
+            # the package travels in the copyable body, not just the title
+            body = app.screen.query_one("#viewer-scroll Static").render()
+            self.assertIn("package: com.acme.sample", body.plain)
             await pilot.press("escape")
             await pilot.pause(0.2)
             # package filter still matches after the process "dies"
@@ -191,7 +194,7 @@ class CrashFlow(unittest.IsolatedAsyncioTestCase):
             merged = dict(app.pid_names)
             merged.update({"99": "com.other"})
             app.pid_names = merged
-            app.query_one("#pkg").value = "teads"
+            app.query_one("#pkg").value = "acme"
             await pilot.pause(0.4)
             self.assertEqual(app.shown, 2)
 
@@ -247,11 +250,11 @@ class PresetsAndPersistence(unittest.IsolatedAsyncioTestCase):
     async def test_filters_restored_on_launch(self):
         tmp = isolate_state()
         tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({"filters": {"query": "tag:TeadsSDK", "errors": True}}))
+        tmp.write_text(json.dumps({"filters": {"query": "tag:AcmeSDK", "errors": True}}))
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.4)
-            self.assertEqual(app.query_one("#query").value, "tag:TeadsSDK")
+            self.assertEqual(app.query_one("#query").value, "tag:AcmeSDK")
             # legacy "errors only" state maps onto the level selector
             self.assertEqual(app.min_level, "E")
 
@@ -260,13 +263,13 @@ class PresetsAndPersistence(unittest.IsolatedAsyncioTestCase):
         tmp = isolate_state()
         tmp.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps({
-            "filters": {"tag": "TeadsSDK", "msg": "timeout"},
+            "filters": {"tag": "AcmeSDK", "msg": "timeout"},
         }))
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.4)
             self.assertEqual(
-                app.query_one("#query").value, "tag:TeadsSDK AND message:timeout"
+                app.query_one("#query").value, "tag:AcmeSDK AND message:timeout"
             )
 
     async def test_theme_and_wrap_persist(self):
@@ -410,19 +413,19 @@ class AdbMenuFlow(unittest.IsolatedAsyncioTestCase):
         async with app.run_test() as pilot:
             await pilot.pause(0.2)
             app.serial = "FAKE"
-            app.pid_names = {"1": "com.teads.sample", "2": "com.other.app", "3": "kworker"}
+            app.pid_names = {"1": "com.acme.sample", "2": "com.other.app", "3": "kworker"}
             await pilot.press("ctrl+a")
             await pilot.pause(0.2)
             self.assertIsInstance(app.screen, FilterPickScreen)
             # only dotted names offered, sorted
-            self.assertEqual(app.screen._all, ["com.other.app", "com.teads.sample"])
+            self.assertEqual(app.screen._all, ["com.acme.sample", "com.other.app"])
             # type to filter, enter selects the first match
-            await pilot.press(*"teads")
+            await pilot.press(*"acme")
             await pilot.pause(0.2)
-            self.assertEqual(app.screen._current, ["com.teads.sample"])
+            self.assertEqual(app.screen._current, ["com.acme.sample"])
             await pilot.press("enter")
             await pilot.pause(0.3)
-            self.assertEqual(app._adb_target, "com.teads.sample")
+            self.assertEqual(app._adb_target, "com.acme.sample")
             self.assertIsInstance(app.screen, PickListScreen)  # ops menu
             self.assertTrue(any("Start app" in o for o in app.screen._options))
             await pilot.press("escape")

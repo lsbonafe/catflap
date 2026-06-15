@@ -607,7 +607,7 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/] — the query box
   [i $secondary]/\bbugs?\b/[/]                [b]\b[/] word boundary
 
   case-insensitive · an invalid regex falls back to literal text
-  mix freely:  [b]meltdown [$primary]OR[/] [i $secondary]/retry \d+/[/] [$primary]AND NOT[/] teads[/]
+  mix freely:  [b]meltdown [$primary]OR[/] [i $secondary]/retry \d+/[/] [$primary]AND NOT[/] noise[/]
 
 
 [b u $accent]Scope[/]
@@ -977,7 +977,7 @@ class SavePresetScreen(OutsideClickDismiss, ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="preset-box"):
             yield Label("Preset name", id="preset-title")
-            yield Input(placeholder="e.g. teads interstitial", id="preset-name")
+            yield Input(placeholder="e.g. my app errors", id="preset-name")
 
     def on_input_submitted(self, event: Input.Submitted):
         self.dismiss(event.value.strip() or None)
@@ -2219,10 +2219,18 @@ class Catflap(App):
             return
         pkg = self.pid_names.get(start.pid, f"pid {start.pid}")
         err_style = self.level_styles.get("E", "red")
-        body = Text("\n").join(
+        # lead with a package/pid header so it travels with the copied text
+        header = Text.assemble(
+            ("package: ", "dim"), (pkg, "bold"),
+            ("   pid ", "dim"), (str(start.pid), ""),
+            ("   tag ", "dim"), (start.tag, "bold"),
+        )
+        lines = [header, Text("")]
+        lines.extend(
             Text.assemble((e.ts, "dim"), " ", (e.msg, err_style if e.level in ("E", "F") else ""))
             for e in block
         )
+        body = Text("\n").join(lines)
         self.push_screen(TextViewerScreen(f"💥 {pkg} — {start.tag} @ {start.ts}", body))
 
     def set_min_level(self, level, exact=None):

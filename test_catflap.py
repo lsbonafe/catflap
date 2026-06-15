@@ -58,13 +58,13 @@ class MigrateQueryTest(unittest.TestCase):
         self.assertEqual(catflap._migrate_query({"query": "tag:x"}), "tag:x")
 
     def test_legacy_single_box(self):
-        self.assertEqual(catflap._migrate_query({"tag": "TeadsSDK"}), "tag:TeadsSDK")
+        self.assertEqual(catflap._migrate_query({"tag": "AcmeSDK"}), "tag:AcmeSDK")
         self.assertEqual(catflap._migrate_query({"msg": "timeout"}), "message:timeout")
 
     def test_legacy_both_boxes_and_joined(self):
         self.assertEqual(
-            catflap._migrate_query({"tag": "TeadsSDK", "msg": "timeout"}),
-            "tag:TeadsSDK AND message:timeout",
+            catflap._migrate_query({"tag": "AcmeSDK", "msg": "timeout"}),
+            "tag:AcmeSDK AND message:timeout",
         )
 
     def test_legacy_operators_preserved(self):
@@ -258,9 +258,9 @@ class MatchesTest(unittest.TestCase):
         self.assertFalse(matches("only toto here", terms))
 
     def test_and_with_regex_term(self):
-        terms = parse_terms("teads AND /retry \\d+/")
-        self.assertTrue(matches("Teads: retry 3 scheduled", terms))
-        self.assertFalse(matches("Teads: retry soon", terms))
+        terms = parse_terms("acme AND /retry \\d+/")
+        self.assertTrue(matches("Acme: retry 3 scheduled", terms))
+        self.assertFalse(matches("Acme: retry soon", terms))
 
 
 class ParseLineTest(unittest.TestCase):
@@ -287,8 +287,8 @@ class ExportTest(unittest.TestCase):
     def test_filename_convention(self):
         now = datetime(2026, 6, 12, 14, 33, 21)
         self.assertEqual(
-            export_filename("com.teads OR sample", now),
-            "logcat_com.teads-OR-sample_2026-06-12_14-33-21.md",
+            export_filename("com.acme OR sample", now),
+            "logcat_com.acme-OR-sample_2026-06-12_14-33-21.md",
         )
         self.assertEqual(export_filename("", now), "logcat_all_2026-06-12_14-33-21.md")
 
@@ -311,7 +311,7 @@ class NotOperatorTest(unittest.TestCase):
 
     def test_leading_not(self):
         terms = parse_terms("NOT Choreographer")
-        self.assertTrue(matches("Teads: ad loaded", terms))
+        self.assertTrue(matches("Acme: ad loaded", terms))
         self.assertFalse(matches("Choreographer: skipped frames", terms))
 
     def test_not_with_regex(self):
@@ -373,7 +373,7 @@ class CrashTest(unittest.TestCase):
             "06-12 10:00:00.000  42  42 E AndroidRuntime: FATAL EXCEPTION: main",
             "06-12 10:00:00.001  99  99 D Other: interleaved noise",
             "06-12 10:00:00.002  42  42 E AndroidRuntime: java.lang.NullPointerException",
-            "06-12 10:00:00.003  42  42 E AndroidRuntime: \tat com.teads.Ad.load(Ad.kt:12)",
+            "06-12 10:00:00.003  42  42 E AndroidRuntime: \tat com.acme.Ad.load(Ad.kt:12)",
             "06-12 10:00:00.004  42  42 I Process: Sending signal",
             "06-12 10:00:00.005  42  42 E AndroidRuntime: not part of the block anymore",
         ]
@@ -455,8 +455,8 @@ class LogcatCmdTest(unittest.TestCase):
 
 class ParseForegroundTest(unittest.TestCase):
     MODERN = """
-    topResumedActivity=ActivityRecord{a1b2c3 u0 com.teads.sample/.MainActivity t123}
-    mFocusedApp=ActivityRecord{a1b2c3 u0 com.teads.sample/.MainActivity t123}
+    topResumedActivity=ActivityRecord{a1b2c3 u0 com.acme.sample/.MainActivity t123}
+    mFocusedApp=ActivityRecord{a1b2c3 u0 com.acme.sample/.MainActivity t123}
 """
     LEGACY = """
     mResumedActivity: ActivityRecord{d4e5f6 u0 com.example.legacy/.HomeActivity t7}
@@ -474,7 +474,7 @@ class ParseForegroundTest(unittest.TestCase):
         self.assertEqual(parse_foreground(self.PIXEL_A16), "com.google.android.apps.nexuslauncher")
 
     def test_top_resumed_activity(self):
-        self.assertEqual(parse_foreground(self.MODERN), "com.teads.sample")
+        self.assertEqual(parse_foreground(self.MODERN), "com.acme.sample")
 
     def test_legacy_resumed_activity(self):
         self.assertEqual(parse_foreground(self.LEGACY), "com.example.legacy")
@@ -528,14 +528,14 @@ class SuggestTest(unittest.TestCase):
         self.assertEqual(split_last_term("a or b OR "), ("a or b OR ", ""))
 
     def test_suggest_substring_case_insensitive(self):
-        cands = ["InterstitialDebug", "TeadsSDK", "WindowManager"]
-        self.assertEqual(suggest(cands, "teads"), ["TeadsSDK"])
+        cands = ["InterstitialDebug", "AcmeSDK", "WindowManager"]
+        self.assertEqual(suggest(cands, "acme"), ["AcmeSDK"])
 
     def test_suggest_empty_term_returns_top(self):
         self.assertEqual(suggest(["a", "b", "c"], "", limit=2), ["a", "b"])
 
     def test_suggest_excludes_exact_match(self):
-        self.assertEqual(suggest(["TeadsSDK"], "teadssdk"), [])
+        self.assertEqual(suggest(["AcmeSDK"], "acmesdk"), [])
 
 
 if __name__ == "__main__":

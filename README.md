@@ -118,7 +118,7 @@ ninja AND pirate          # both terms, any order
 wifi OR coffee            # either term
 pizza AND NOT pineapple   # exclude a term
 /retry \d+/               # regex term (case-insensitive)
-meltdown OR /ad (loaded|failed)/ AND NOT teads
+meltdown OR /ad (loaded|failed)/ AND NOT noise
 ```
 
 Press `F1` inside the app for the full cheatsheet, including how to copy text from the terminal.
