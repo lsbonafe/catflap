@@ -56,140 +56,14 @@ from catflap.filtering import (  # noqa: E402
 )
 
 
-def is_crash_start(e):
-    return e.level == "F" or (e.tag == "AndroidRuntime" and "FATAL EXCEPTION" in e.msg)
-
-
-def crash_block(entries, start_entry, limit=400):
-    """The crash line plus its contiguous same-pid/same-tag follow-up (stack trace).
-    Returns [] if start_entry is no longer in entries (evicted from buffer)."""
-    block = []
-    for e in entries:
-        if not block:
-            if e is start_entry:
-                block.append(e)
-            continue
-        if e.pid == start_entry.pid and e.tag == start_entry.tag:
-            block.append(e)
-            if len(block) >= limit:
-                break
-        elif e.pid == start_entry.pid:
-            break  # same process moved on to another tag — trace over
-    return block
-
-
-PROCESS_LINE_RE = re.compile(r"Process:\s*([\w.]+),\s*PID:")
-
-
-def crash_package(block):
-    """Package name from a crash block's 'Process: <pkg>, PID:' line, or None.
-    The Android runtime prints this line in every FATAL EXCEPTION, so it's a
-    reliable fallback when the pid isn't in the live pid->name map yet."""
-    for e in block:
-        m = PROCESS_LINE_RE.search(e.msg)
-        if m:
-            return m.group(1)
-    return None
-
-
-def banner_diff(prev_live, cur_names, pid_names, f_pkg):
-    """Diff two ps polls into process STARTED/ENDED events for the filtered pkg.
-
-    prev_live  — set of pids that were live in the previous poll
-    cur_names  — {pid: package} from the current poll (live pids only)
-    pid_names  — the merged, never-removed map (resolves a dead pid's package)
-    f_pkg      — parsed package filter; empty -> no banners
-
-    Returns (started, ended), each a list of (pid, package). The caller is
-    responsible for skipping the very first poll (prev_live empty) so the whole
-    process table isn't dumped as STARTED banners on launch."""
-    if not f_pkg:
-        return [], []
-    cur_live = set(cur_names)
-    started = [
-        (pid, cur_names[pid])
-        for pid in cur_live - prev_live
-        if matches(cur_names[pid], f_pkg)
-    ]
-    ended = []
-    for pid in prev_live - cur_live:
-        pkg = pid_names.get(pid, "")  # dead pid: package from the never-removes map
-        if pkg and matches(pkg, f_pkg):
-            ended.append((pid, pkg))
-    return started, ended
-
-
-def md_escape(text):
-    return text.replace("|", "\\|")
-
-
-def export_markdown(entries, filters_desc, when, packages=None):
-    """Markdown table export. Columns: Time | Level | Package | Tag | Message.
-
-    packages — {pid: package} to fill the Package column.
-    A crash row (level F or a FATAL EXCEPTION) shows 💥 in the Level cell."""
-    packages = packages or {}
-    lines = [
-        f"# logcat export — {when}",
-        "",
-        f"- Filters: {filters_desc}",
-        f"- Lines: {len(entries)}",
-        "",
-        "| Time | Level | Package | Tag | Message |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    for e in entries:
-        level = f"💥 {e.level}".strip() if is_crash_start(e) else e.level
-        pkg = md_escape(packages.get(e.pid, ""))
-        lines.append(f"| {e.ts} | {level} | {pkg} | {md_escape(e.tag)} | {md_escape(e.msg)} |")
-    return "\n".join(lines) + "\n"
-
-
-def export_filename(pkg_filter, now, ext="md"):
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", pkg_filter).strip("-") or "all"
-    return f"logcat_{slug}_{now.strftime('%Y-%m-%d_%H-%M-%S')}.{ext}"
-
-
-def export_raw(entries):
-    return "\n".join(
-        f"{e.ts} {e.pid} {e.tid} {e.level} {e.tag}: {e.msg}" for e in entries
-    ) + "\n"
-
-
-def ensure_dir(path_str):
-    """Expand and create the folder; None if it cannot be created."""
-    try:
-        d = Path(path_str).expanduser()
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-    except Exception:
-        return None
-
-
-STATE_PATH = Path.home() / ".config" / "catflap" / "state.json"
-
-
-def load_state():
-    if not STATE_PATH.exists() and STATE_PATH.parent.name == "catflap":
-        legacy = Path.home() / ".config" / "logcat-tui" / "state.json"
-        if legacy.exists():
-            try:
-                STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                STATE_PATH.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
-            except Exception:
-                pass
-    try:
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def save_state(state):
-    try:
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+from catflap.crash import (  # noqa: E402
+    is_crash_start, crash_block, crash_package, banner_diff,
+)
+from catflap.export import (  # noqa: E402
+    md_escape, export_markdown, export_filename, export_raw, ensure_dir,
+)
+from catflap import state as state  # noqa: E402  (mutated by tests: state.STATE_PATH)
+from catflap.state import STATE_PATH, load_state, save_state  # noqa: E402
 
 
 def parse_permissions(dumpsys_output):
@@ -2586,7 +2460,7 @@ class Catflap(App):
     def _do_factory_reset(self):
         self._state = {}
         try:
-            STATE_PATH.unlink()
+            state.STATE_PATH.unlink()  # via module so tests' redirect applies
         except Exception:
             pass
         self._preferred_serial = None

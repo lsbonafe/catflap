@@ -29,7 +29,7 @@ def make_app():
 
 def isolate_state():
     tmp = Path(tempfile.mkdtemp()) / "state.json"
-    catflap.STATE_PATH = tmp
+    catflap.state.STATE_PATH = tmp  # load_state/save_state read it from the module
     return tmp
 
 
