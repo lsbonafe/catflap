@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 
+from rich.cells import cell_len
 from rich.highlighter import Highlighter
 from rich.markup import escape
 from rich.text import Text
@@ -1208,6 +1209,17 @@ class LevelChip(Static):
         self.app.toggle_level_menu()
 
 
+class RecBar(Static):
+    """Fixed bottom-right recording indicator: 🔴 REC m:ss ⏹ — click to stop."""
+
+    def on_mouse_down(self, event):
+        # fire on press, not on a matched click — a per-second repaint between
+        # mouse-down and -up can otherwise invalidate the click and the stop
+        # gets dropped (you'd have to click several times)
+        event.stop()
+        self.app.action_toggle_record()  # stop & save
+
+
 class DevicePickerScreen(OutsideClickDismiss, ModalScreen):
     CSS = """
     DevicePickerScreen { align: center middle; }
@@ -1315,6 +1327,14 @@ class Catflap(App):
         width: 28; height: auto; max-height: 10;
         background: $surface; border: round $accent;
     }
+    #recbar {
+        layer: overlay;
+        display: none;
+        width: auto; height: 1;
+        padding: 0 1;
+        background: $error; color: $text; text-style: bold;
+    }
+    #recbar:hover { background: $error 80%; }
     """
 
     BINDINGS = [
@@ -1328,6 +1348,7 @@ class Catflap(App):
         Binding("ctrl+a", "adb_menu", "ADB", priority=True),
         Binding("f1", "help", "Filtering", show=False, priority=True),
         Binding("f2", "level_menu", "Level", show=False, priority=True),
+        Binding("ctrl+r", "toggle_record", "Record", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
@@ -1507,6 +1528,8 @@ class Catflap(App):
         self.crashes = []
         self._adb_target = None
         self._record_proc = None
+        self._record_start = 0.0   # monotonic time the recording began
+        self._rec_timer = None     # interval that ticks the bottom-right REC bar
         self._last_deeplink = ""
         self.min_level = "V"
         self.level_exact = False
@@ -1547,6 +1570,7 @@ class Catflap(App):
         yield OrderedFooter()
         yield OptionList(id="suggest")
         yield OptionList(id="levelmenu")
+        yield RecBar(id="recbar")
 
     def _rebuild_theme_styles(self):
         """Derive log/operator colors from the active theme's palette."""
@@ -1927,6 +1951,7 @@ class Catflap(App):
     def action_device_menu(self):
         name = self.device_model or self.serial
         title = f"Device — {name}" if self.serial else "No devices connected"
+        recording = self._record_proc is not None
 
         def done(choice):
             if not choice:
@@ -1937,11 +1962,21 @@ class Catflap(App):
                 self._install_apk_flow()
             elif choice.startswith("🖥"):
                 self._mirror_screen()
+            elif choice.startswith("📸"):
+                self._export_dir_or_prompt(self._take_screenshot)
+            elif choice.startswith("🎬") or choice.startswith("⏹"):
+                self.action_toggle_record()
 
         self.push_screen(
             PickListScreen(
                 title,
-                ["🔄 Switch streaming device", "📦 Install APK…", "🖥  Mirror screen (scrcpy)"],
+                [
+                    "🔄 Switch streaming device",
+                    "📦 Install APK…",
+                    "🖥  Mirror screen (scrcpy)",
+                    "📸 Screenshot",
+                    "⏹ Stop recording & save" if recording else "🎬 Start screen record",
+                ],
             ),
             done,
         )
@@ -2609,16 +2644,31 @@ class Catflap(App):
         if ok and then:
             then()
 
+    def _package_predicates(self):
+        """Positive package: predicates from the query box (and the legacy pkg
+        box, if anything ever sets it). Each is a compiled pattern."""
+        pats = []
+        for clause in self.f_query:
+            for field, _op, pat, negated in clause:
+                if field == "pkg" and not negated:
+                    pats.append(pat)
+        for pat, negated in self.f_pkg:  # legacy package box (normally empty)
+            if not negated:
+                pats.append(pat)
+        return pats
+
     def _default_adb_target(self):
         """The app the package filter unambiguously points at, if any."""
-        text = self.query_one("#pkg", Input).value.strip()
-        if not text or not self.f_pkg:
+        pats = self._package_predicates()
+        if not pats:
             return None
         names = sorted({n for n in self.pid_names.values() if "." in n})
-        if text in names:
-            return text
-        matching = [n for n in names if matches(n, self.f_pkg)]
-        return matching[0] if len(matching) == 1 else None
+        matching = [n for n in names if all(p.search(n) for p in pats)]
+        if len(matching) == 1:
+            return matching[0]
+        # several match — prefer an exact process-name hit (package:com.x.app)
+        exact = [n for n in matching if any(p.pattern == re.escape(n) for p in pats)]
+        return exact[0] if len(exact) == 1 else None
 
     def action_adb_menu(self):
         if self.serial is None:
@@ -2633,9 +2683,17 @@ class Catflap(App):
 
     def _pick_adb_target(self):
         candidates = sorted({n for n in self.pid_names.values() if "." in n})
-        if self.f_pkg:
-            matching = [c for c in candidates if matches(c, self.f_pkg)]
-            candidates = matching + [c for c in candidates if c not in matching]
+        # float packages matching the current package: filter to the top, then
+        # the foreground app, so the likely target is first
+        pats = self._package_predicates()
+        ordered = []
+        if pats:
+            matching = [c for c in candidates if all(p.search(c) for p in pats)]
+            ordered += matching
+        if self.foreground_pkg and self.foreground_pkg in candidates:
+            if self.foreground_pkg not in ordered:
+                ordered.append(self.foreground_pkg)
+        candidates = ordered + [c for c in candidates if c not in ordered]
         if not candidates:
             self.notify("No processes mapped yet — wait a moment.", severity="warning")
             return
@@ -2720,14 +2778,75 @@ class Catflap(App):
         elif choice == "📸 Screenshot":
             self._export_dir_or_prompt(self._take_screenshot)
         elif choice == "🎬 Start screen record":
-            self._record_proc = subprocess.Popen(
-                ["adb", "-s", self.serial, "shell", "screenrecord", "--time-limit", "180",
-                 "/sdcard/catflap_rec.mp4"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            self.notify("Recording… (^a → Stop to save, 3 min max)")
+            self._start_recording()
         elif choice.startswith("⏹"):
             self._export_dir_or_prompt(self._stop_recording)
+
+    REC_LIMIT = 180  # screenrecord --time-limit (the device caps at 3 min)
+
+    def _start_recording(self):
+        """Begin a device screen recording (no app target needed)."""
+        if self.serial is None:
+            self.notify("No devices connected.", severity="warning")
+            return
+        if self._record_proc is not None:
+            return  # already recording
+        self._record_proc = subprocess.Popen(
+            ["adb", "-s", self.serial, "shell", "screenrecord",
+             "--time-limit", str(self.REC_LIMIT), "/sdcard/catflap_rec.mp4"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self._record_start = time.monotonic()
+        bar = self.query_one("#recbar", RecBar)
+        bar.display = True
+        self._tick_recbar()        # sets _rec_text
+        self._position_recbar()    # …which the position measurement needs
+        self._rec_timer = self.set_interval(1.0, self._tick_recbar)
+
+    def on_resize(self, event):
+        if self._record_proc is not None:
+            self._position_recbar()
+
+    def _tick_recbar(self):
+        if self._record_proc is None:
+            return
+        elapsed = int(time.monotonic() - self._record_start)
+        # the device auto-stops at the limit — finalise & save when it does
+        if elapsed >= self.REC_LIMIT or self._record_proc.poll() is not None:
+            self.notify("Recording reached the 3 min limit — saving.")
+            self._export_dir_or_prompt(self._stop_recording)
+            return
+        remaining = self.REC_LIMIT - elapsed
+        text = f"🔴 REC  {elapsed // 60}:{elapsed % 60:02d}  / {remaining // 60}:{remaining % 60:02d} left   ⏹ stop"
+        # only the text changes each tick; the position is set once on show /
+        # resize (re-applying the offset every second re-layouts the overlay and
+        # can drop a click landing in that frame — see _position_recbar)
+        self._rec_text = text
+        self.query_one("#recbar", RecBar).update(text)
+
+    def _position_recbar(self):
+        # anchor flush against the right edge, one row above the footer. measure
+        # the real display width (cell_len counts the wide 🔴/⏹ glyphs as 2) and
+        # add the box's 0 1 left/right padding so it sits exactly at the edge
+        bar = self.query_one("#recbar", RecBar)
+        width = cell_len(getattr(self, "_rec_text", "")) + 2  # +2 = padding 0 1
+        bar.styles.offset = (max(0, self.size.width - width), self.size.height - 2)
+
+    def _hide_recbar(self):
+        if self._rec_timer is not None:
+            self._rec_timer.stop()
+            self._rec_timer = None
+        self.query_one("#recbar", RecBar).display = False
+
+    def action_toggle_record(self):
+        """Ctrl+R — start a recording, or stop & save the one in progress."""
+        if self.serial is None:
+            self.notify("No devices connected.", severity="warning")
+            return
+        if self._record_proc is not None:
+            self._export_dir_or_prompt(self._stop_recording)
+        else:
+            self._start_recording()
 
     def _confirm_adb(self, question, args, success_msg, then=None):
         def done(answer):
@@ -2791,6 +2910,7 @@ class Catflap(App):
     def _stop_recording(self, d):
         serial = self.serial
         proc, self._record_proc = self._record_proc, None
+        self._hide_recbar()
 
         def work():
             try:

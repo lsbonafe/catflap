@@ -716,6 +716,67 @@ class AdbMenuFlow(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any("📦 Target" in o for o in app.screen._options))
             await pilot.press("escape")
 
+    async def test_adb_target_inherits_package_from_query(self):
+        """A package: filter in the query box scopes the ADB target — Ctrl+A
+        goes straight to the ops menu for that app (regression: it used to read
+        the now-hidden package box)."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.serial = "FAKE"
+            app.pid_names = {"1": "com.example.app", "2": "com.other.app"}
+            app.query_one("#query").value = "package:com.example"
+            await pilot.pause(0.4)
+            await pilot.press("ctrl+a")
+            await pilot.pause(0.2)
+            self.assertEqual(app._adb_target, "com.example.app")
+            self.assertIsInstance(app.screen, PickListScreen)  # ops, not picker
+            self.assertTrue(any("📦 Target: com.example.app" in o for o in app.screen._options))
+            await pilot.press("escape")
+
+    async def test_device_menu_has_screenshot_and_record(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.serial = "FAKE"
+            app.action_device_menu()
+            await pilot.pause(0.2)
+            self.assertIsInstance(app.screen, PickListScreen)
+            opts = app.screen._options
+            self.assertTrue(any("📸 Screenshot" in o for o in opts))
+            self.assertTrue(any("Start screen record" in o for o in opts))
+            await pilot.press("escape")
+
+    async def test_ctrl_r_toggles_recording_and_recbar(self):
+        from unittest.mock import patch, MagicMock
+        import tempfile
+        tmp = isolate_state()
+        app = make_app()
+        # a saved export dir so stop runs without a folder prompt
+        app_state_dir = tempfile.mkdtemp()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.serial = "FAKE"
+            app._state["export_dir"] = app_state_dir
+            proc = MagicMock()
+            proc.poll.return_value = None
+            recbar = app.query_one("#recbar")
+            self.assertFalse(recbar.display)
+            with patch("catflap.subprocess.Popen", return_value=proc):
+                await pilot.press("ctrl+r")  # start
+                await pilot.pause(0.2)
+            self.assertIsNotNone(app._record_proc)
+            self.assertTrue(recbar.display)  # the REC bar is shown
+            self.assertIn("REC", str(recbar.render()))
+            # stop: clears the handle and hides the bar
+            with patch("catflap.subprocess.run", return_value=MagicMock(returncode=0)):
+                await pilot.press("ctrl+r")
+                await pilot.pause(0.3)
+            self.assertIsNone(app._record_proc)
+            self.assertFalse(recbar.display)
+
 
 class Screens(unittest.IsolatedAsyncioTestCase):
     async def test_device_picker_and_quit_binding(self):
