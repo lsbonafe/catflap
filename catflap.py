@@ -1300,7 +1300,7 @@ class Catflap(App):
     }
     #minlevel:hover { color: $text; }
     #minlevel:focus { border: tall $accent; color: $text; text-style: bold; }
-    #minlevel.levelactive { color: $accent; text-style: bold; }
+    #minlevel.levelactive { text-style: bold; }
     Toast { width: 44; }
     RichLog { scrollbar-size-horizontal: 0; }
     #suggest {
@@ -1594,6 +1594,7 @@ class Catflap(App):
         # should not silently carry over (theme, presets, export dir etc. still
         # persist). Saved filters live on only via named presets.
         self._apply_filter_dict({})
+        self.set_min_level(self.min_level, self.level_exact)  # paint the chip colour
         if self._state.get("theme"):
             try:
                 self.theme = self._state["theme"]
@@ -2238,7 +2239,11 @@ class Catflap(App):
         w = event.widget
         if w is not self.suggest_list and w is not self._suggest_target:
             self._hide_suggest()
-        if w is not self.level_menu:
+        # close the level menu when focus moves away — but NOT when it lands on
+        # the chip itself, whose click is about to toggle the menu (otherwise
+        # the focus-close and the toggle race and cancel out, so the menu
+        # appears not to open)
+        if w is not self.level_menu and not isinstance(w, LevelChip):
             self.level_menu.display = False
         if isinstance(w, Input) and w.id == "pkg" and not self._pkg_hidden():
             self._update_suggest(w)  # the package box drops down on focus
@@ -2506,7 +2511,9 @@ class Catflap(App):
             self.level_exact = exact
         sign = "=" if self.level_exact else "≥"
         chip = self.query_one("#minlevel", Static)
-        chip.update(f"Level {sign} {level}")
+        # tint the chip text with the selected level's colour (matches the log)
+        style = self.level_styles.get(level, "") or "dim"
+        chip.update(Text.assemble(("Level ", "dim"), (f"{sign} {level}", f"bold {style}")))
         chip.set_class(level != "V" or self.level_exact, "levelactive")
         self._refresh_view()
 

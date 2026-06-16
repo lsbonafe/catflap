@@ -557,6 +557,35 @@ class LevelMenuFlow(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(app.level_menu.display)
             self.assertEqual(app.min_level, "W")
 
+    async def test_clicking_chip_toggles_consistently(self):
+        """Clicking the Level chip must reliably open/close — focusing the chip
+        should not race with its own toggle and cancel out."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            chip = app.query_one("#minlevel")
+            states = []
+            for _ in range(6):
+                await pilot.click(chip)
+                await pilot.pause(0.12)
+                states.append(app.level_menu.display)
+            self.assertEqual(states, [True, False, True, False, True, False])
+
+    async def test_chip_text_colored_by_level(self):
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.set_min_level("E")
+            await pilot.pause(0.1)
+            rendered = app.query_one("#minlevel").render()
+            self.assertIn("Level", rendered.plain)
+            self.assertIn("E", rendered.plain)
+            # the level part is styled (bold + the level colour), not plain
+            styled = [str(s.style) for s in rendered.spans if s.style]
+            self.assertTrue(any("bold" in s for s in styled))
+
     async def test_exact_mode_toggle(self):
         isolate_state()
         app = make_app()
