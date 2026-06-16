@@ -212,10 +212,20 @@ def _parse_and_term(part):
     return preds
 
 
+# a token is a /regex/ group (which may contain spaces) or a run of non-space
+BARE_TOKEN_RE = re.compile(r"/[^/]*/i?|\S+")
+
+
+def _bare_tokens(span):
+    """Split a keyless span into tokens, keeping an inline /regex/ whole even
+    when it contains spaces ('/retry \\d+/' is one token, not two)."""
+    return BARE_TOKEN_RE.findall(span)
+
+
 def _bare_predicates(span):
-    """Whitespace-split a keyless span into 'any' predicates; 'NOT word' negates."""
+    """Tokenize a keyless span into 'any' predicates; 'NOT word' negates."""
     out = []
-    words = span.split()
+    words = _bare_tokens(span)
     i = 0
     while i < len(words):
         w = words[i]
@@ -749,7 +759,10 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/] — the query box
 
   the app captures the mouse — hold a modifier while dragging to select:
 
-  Ghostty/kitty/Linux: [b]Shift[/]   ·   iTerm2: [b]⌥ Option[/]   ·   macOS Terminal: [b]Fn[/]
+  [b]Ghostty[/]          hold [b]Shift[/]
+  [b]kitty / Linux[/]    hold [b]Shift[/]
+  [b]iTerm2[/]           hold [b]⌥ Option[/]
+  [b]macOS Terminal[/]   hold [b]Fn[/]
 
   a repaint can wipe the selection — two ways around it:
   [b]1.[/] keep the modifier held [b]~1s[/] after the drag, then release

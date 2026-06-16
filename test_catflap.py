@@ -335,6 +335,23 @@ class ParseQueryTest(unittest.TestCase):
     def test_inline_regex_in_contains_still_works(self):
         self.assertTrue(qm("tag:/Cho+/", tag="Choo"))
 
+    def test_bare_inline_regex_with_spaces(self):
+        # a /regex/ with spaces is one token, not split on whitespace
+        self.assertTrue(qm(r"/retry \d+/", msg="retry 5 times"))
+        self.assertFalse(qm(r"/retry \d+/", msg="retry now"))
+        self.assertTrue(qm("/unicorn (seen|missing)/", msg="unicorn seen"))
+        self.assertFalse(qm("/unicorn (seen|missing)/", msg="unicorn gone"))
+
+    def test_bare_regex_with_spaces_mixed_with_operators(self):
+        q = r"meltdown OR /retry \d+/ AND NOT noise"
+        self.assertTrue(qm(q, msg="retry 3"))
+        self.assertFalse(qm(q, msg="retry 3 noise"))  # AND NOT noise excludes
+        self.assertTrue(qm(q, msg="meltdown imminent"))
+
+    def test_not_before_bare_regex(self):
+        self.assertTrue(qm(r"NOT /retry \d+/", msg="all calm"))
+        self.assertFalse(qm(r"NOT /retry \d+/", msg="retry 5"))
+
     def test_explicit_and_terminates_key_value(self):
         # ' AND ' is an operator boundary, not part of the message value
         self.assertTrue(qm("message:ad AND -message:slow", tag="C", msg="boom in ad"))
