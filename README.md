@@ -8,19 +8,20 @@ The little door your Android logs come through. A terminal UI for logcat with An
 
 ## Features
 
-- **Live filters that update as you type**: package, tag, and message boxes with autocomplete suggestions drawn from the actual stream (process names, tags, frequent messages)
-- **Boolean query syntax** in every box: `ad AND timeout`, `wifi OR coffee`, `NOT /Choreographer|gralloc/` — uppercase operators, `AND` binds tighter than `OR`, `/slashes/` for regex, everything else literal
-- **Foreground-app detection**: the package box doubles as a dropdown (click the `▼` or focus it) with the app currently on screen pinned on top — one click to filter on it
-- **Severity filtering**: clickable `Level` chip (or `F2`) with a dropdown; switchable operator — `≥` (that level and worse) or `=` (exactly that level)
+- **One unified query box, Android Studio–style**: scope a term to a field with `tag:`, `message:` or `package:`; add `=:` (exact), `~:` (regex), or a leading `-` to negate (`-tag:gc`). A bare word with no key matches the **tag OR the message**. Live autocomplete draws from the actual stream (process names, tags, frequent messages); typing `package:` pins the **foreground app** on top.
+- **Boolean operators** compose with the keys: `tag:Ads AND -message:fill`, `wifi OR coffee`, `NOT /Choreographer|gralloc/` — uppercase operators, `AND` binds tighter than `OR`, `/slashes/` for regex, everything else literal
+- **Match highlighting**: the terms you're filtering on are highlighted inline in the log — tag matches one colour, message matches another — so you can see *why* a line matched
+- **Process banners**: with a `package:` filter set, an Android-Studio-style divider marks when that app's process starts or dies (`──── PROCESS STARTED (pid) … ────`), so restarts and crashes are obvious
+- **Severity filtering**: clickable `Level` chip (or `F2`) with a dropdown; the chip text is tinted to the selected level; switchable operator — `≥` (that level and worse) or `=` (exactly that level)
 - **Search the scrollback** (`/`): jump to matches across the whole buffer, not just what's on screen; `n`/`N` step between hits, same plain-text or `/regex/` syntax as the filters
-- **Crash spotlight**: FATAL EXCEPTIONs trigger a toast and a persistent 💥 indicator; `Ctrl+G` opens the full stack trace in a modal, regardless of active filters
+- **Crash spotlight**: FATAL EXCEPTIONs trigger a toast and a persistent 💥 indicator; `Ctrl+G` opens the full stack trace in a modal (with the package resolved from the crash itself), regardless of active filters
 - **Device menu** (`Ctrl+D`): switch the streaming device (AVD names for emulators, auto-reconnect), install an APK via a native file picker, or mirror the screen with [scrcpy](https://github.com/Genymobile/scrcpy) if it's installed
 - **Log buffer selection** (`Ctrl+B`): stream `crash`, `events`, `radio`, or everything instead of the default `main`+`system`
 - **ADB operations menu** (`Ctrl+A`): start/restart/kill the target app, simulate process death, clear data, uninstall, grant/revoke permissions, open deep links, screenshot, screen record
 - **Pause/resume** (`Ctrl+S`): freeze the view to read or select text; the buffer keeps filling and renders on resume
-- **Exports** (`Ctrl+E`): Markdown table or raw `.log`, respecting active filters, to a configurable folder
-- **Filter presets** and full session persistence (filters, level, device, buffer, theme, wrap, export folder)
-- **Theme-aware**: all colors (log levels, operators, indicators) derive from the active Textual theme — switch via the command palette
+- **Exports** (`Ctrl+E`): Markdown table (`Time · Level · Package · Tag · Message`, crashes marked 💥) or raw `.log`, respecting active filters, to a configurable folder
+- **Filter presets** (save/load named filters) — each session otherwise starts with a clean filter; theme, device, buffer, wrap and export folder persist
+- **Theme-aware**: all colors (log levels, operators, match highlights, indicators) derive from the active Textual theme — switch via the command palette
 - Pid→package mapping that survives process death, so crash lines stay attributed and filterable
 - **Headless mode for scripts & AI agents** (`catflap dump`): the same boolean/regex filtering piped to stdout (text or JSONL), no TUI — ships a [SKILL.md](SKILL.md) so coding agents can pull filtered logs in one call
 
@@ -30,7 +31,7 @@ catflap's niche is the **terminal**: live boolean filtering with package/PID res
 
 | Tool | UI | Boolean filters | PID resolution | ADB actions | Screen mirror | Maintained |
 | --- | --- | --- | --- | --- | --- | --- |
-| **catflap** | TUI | ✅ `AND`/`OR`/`NOT` + regex | ✅ | ✅ install, clear, perms, deep links, screenshot/record | ✅ scrcpy | ✅ |
+| **catflap** | TUI | ✅ `tag:`/`message:`/`package:` keys + `AND`/`OR`/`NOT` + regex | ✅ | ✅ install, clear, perms, deep links, screenshot/record | ✅ scrcpy | ✅ |
 | [pidcat](https://github.com/JakeWharton/pidcat) | pipe | ❌ | ✅ | ❌ | ❌ | ❌ (2022) |
 | [lazylogcat](https://github.com/parfenovvs/lazylogcat) | TUI | ❌ per-field, regex | — | ❌ | ❌ | ✅ (2026) |
 | [purr](https://github.com/google/purr) | TUI (fzf) | ❌ fuzzy | ❌ | ✅ shell, wipe, bugreport | ❌ | ⚠️ (2023) |
@@ -109,15 +110,20 @@ Code and Cursor can install it to pull filtered logs in one call). Run
 | `Ctrl+P` | Command palette (presets, wrap, theme, factory reset…) |
 | `Ctrl+Q` | Quit |
 
-Inside the filter boxes, `Ctrl+U` clears to the start of the field and `Ctrl+K` to the end.
+Inside the query box, `Ctrl+U` clears to the start and `Ctrl+K` to the end.
 
 ## Filtering examples
 
 ```
-ninja AND pirate          # both terms, any order
-wifi OR coffee            # either term
-pizza AND NOT pineapple   # exclude a term
-/retry \d+/               # regex term (case-insensitive)
+droid                          # bare word → matches the tag OR the message
+tag:Choreographer              # scope to the tag field
+message:no fill                # scope to the message (spaces kept)
+package:com.example crash      # logs from com.example that mention "crash"
+tag=:AdsManager                # =: exact · ~: regex · - negates (-tag:gc)
+ninja AND pirate               # both terms, any order
+wifi OR coffee                 # either term
+tag:Ads AND NOT message:fill   # combine keys with AND / OR / NOT
+/retry \d+/                    # regex term (case-insensitive)
 meltdown OR /ad (loaded|failed)/ AND NOT noise
 ```
 
@@ -138,7 +144,7 @@ Press `F1` inside the app for the full cheatsheet, including how to copy text fr
 ## Development
 
 ```bash
-.venv/bin/python -m unittest discover    # 75 tests: unit + headless UI integration
+.venv/bin/python -m unittest discover    # 161 tests: unit + headless UI integration
 ```
 
 State is persisted at `~/.config/catflap/state.json` (palette → "Restore factory defaults" wipes it).
