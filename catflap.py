@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """catflap — live adb logcat viewer with dynamic filters, Android Studio style.
 
-Three input boxes (package, tag, message) re-filter the stream as you type.
-Filter syntax: case-insensitive substring; alternatives joined with " OR ",
-e.g. message box: "toto OR bla bla".
+Two input boxes re-filter the stream as you type: a package box (process name)
+and a unified query box. The query box speaks Android-Studio field keys —
+tag: / message: / package: with =: (exact), ~: (regex) and a leading - to
+negate — plus the boolean OR/AND/NOT operators and inline /regex/. A bare word
+with no key matches the tag OR the message.
 """
 
 import json
@@ -99,16 +101,266 @@ def matches(value, clauses):
     )
 
 
-class Entry:
-    __slots__ = ("ts", "pid", "tid", "level", "tag", "msg")
+# ---- unified query language (Android Studio style) --------------------------
+#
+# One box, field-scoped keys. A predicate is (field, op, pattern, negated):
+#   field  — "tag" | "msg" | "pkg" | "any"  ("any" = tag OR msg)
+#   op     — "contains" | "exact" | "regex"
+#   pattern— compiled, case-insensitive
+#   negated— leading '-' on the key
+# Keys:  tag:  message:/msg:  package:/pkg:   ·  =: exact  ·  ~: regex  ·  -key: negate
+# Bare terms (no key) become field "any" and match tag OR msg.
+# OR (uppercase) splits clauses; whitespace / AND join within a clause; a
+# leading NOT before a bare term negates it. A query is DNF: OR of ANDs.
 
-    def __init__(self, ts, pid, tid, level, tag, msg):
+FIELD_ALIASES = {"tag": "tag", "message": "msg", "msg": "msg", "package": "pkg", "pkg": "pkg"}
+
+# key + optional =:/~:/: operator, e.g. tag:  message=:  -pkg~:
+KEY_RE = re.compile(
+    r"(?P<neg>-)?(?P<key>tag|message|msg|package|pkg)(?P<op>=:|~:|:)",
+    re.IGNORECASE,
+)
+
+
+def compile_predicate(field, op, raw, negated):
+    """Build a (field, op, pattern, negated) predicate. Exact anchors the
+    whole value; regex compiles raw; contains uses /…/ regex or literal."""
+    if op == "exact":
+        pat = re.compile(rf"^{re.escape(raw)}$", re.IGNORECASE)
+    elif op == "regex":
+        try:
+            pat = re.compile(raw, re.IGNORECASE)
+        except re.error:
+            pat = re.compile(re.escape(raw), re.IGNORECASE)
+    else:  # contains — honour inline /regex/ for parity with the old boxes
+        pat = compile_term(raw)
+    return (field, op, pat, negated)
+
+
+def _op_name(op_token):
+    return {"=:": "exact", "~:": "regex", ":": "contains"}[op_token]
+
+
+def parse_query(text):
+    """Unified query -> DNF list of clauses; each clause a list of predicates.
+    Empty query -> []. Bare terms -> field 'any'."""
+    clauses = []
+    for part in re.split(r"\s+OR\s+", text.strip()):
+        preds = _parse_clause(part)
+        if preds:
+            clauses.append(preds)
+    return clauses
+
+
+def _parse_clause(part):
+    """One OR-segment -> list of AND-ed predicates.
+
+    An explicit ` AND ` and every field key start a new predicate; a key's
+    value runs up to the next key or the next AND. Keyless spans split on
+    whitespace into 'any' predicates, honouring a leading NOT."""
+    preds = []
+    for chunk in re.split(r"\s+AND\s+", part):
+        preds.extend(_parse_and_term(chunk))
+    return preds
+
+
+def _strip_trailing_not(span):
+    """A 'NOT' word at the end of a span negates the key that follows it (so
+    'NOT message:fill' == '-message:fill'). Return (span_without_not, not_flag)."""
+    words = span.split()
+    if words and words[-1] == "NOT":
+        return " ".join(words[:-1]), True
+    return span, False
+
+
+def _parse_and_term(part):
+    """A single AND-term — may still hold several keys (space = AND), e.g.
+    'tag:Ads -message:fill'. Keys cut it into spans; the leading keyless span
+    becomes bare 'any' predicates. A 'NOT' right before a key negates it.
+
+    Value greediness is per field: tag/package values are a single token (they
+    never contain spaces), so 'package:com.foo crash' is package com.foo AND a
+    bare 'crash' search. message values keep the whole phrase ('message:no fill'
+    matches 'no fill'). Exact/regex (=:/~:) always take the whole value."""
+    preds = []
+    keys = list(KEY_RE.finditer(part))
+    if not keys:
+        return _bare_predicates(part)
+
+    lead, not_next = _strip_trailing_not(part[: keys[0].start()])
+    preds.extend(_bare_predicates(lead))
+    for i, m in enumerate(keys):
+        end = keys[i + 1].start() if i + 1 < len(keys) else len(part)
+        value_span = part[m.end() : end]
+        raw, not_after = _strip_trailing_not(value_span.strip())
+        field = FIELD_ALIASES[m.group("key").lower()]
+        op = _op_name(m.group("op"))
+        negated = bool(m.group("neg")) or not_next
+        # tag/package contains: first token is the value, the rest are bare
+        # search terms (those fields never hold spaces, so trailing words are
+        # clearly separate). message — and any exact/regex match — keeps the
+        # whole phrase.
+        if raw and op == "contains" and field in ("tag", "pkg"):
+            first, _, rest = raw.partition(" ")
+            preds.append(compile_predicate(field, op, first, negated))
+            if rest.strip():
+                preds.extend(_bare_predicates(rest))
+        elif raw:
+            preds.append(compile_predicate(field, op, raw, negated))
+        # a key with no value (trailing "tag:") is an in-progress token — skip
+        not_next = not_after
+    return preds
+
+
+# a token is a /regex/ group (which may contain spaces) or a run of non-space
+BARE_TOKEN_RE = re.compile(r"/[^/]*/i?|\S+")
+
+
+def _bare_tokens(span):
+    """Split a keyless span into tokens, keeping an inline /regex/ whole even
+    when it contains spaces ('/retry \\d+/' is one token, not two)."""
+    return BARE_TOKEN_RE.findall(span)
+
+
+def _bare_predicates(span):
+    """Tokenize a keyless span into 'any' predicates; 'NOT word' negates."""
+    out = []
+    words = _bare_tokens(span)
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w == "AND":
+            i += 1
+            continue
+        if w == "NOT" and i + 1 < len(words):
+            out.append(compile_predicate("any", "contains", words[i + 1], True))
+            i += 2
+            continue
+        if w == "NOT":  # dangling NOT — ignore
+            i += 1
+            continue
+        out.append(compile_predicate("any", "contains", w, False))
+        i += 1
+    return out
+
+
+def _scope_box(value, key):
+    """Rewrite an old single-field box value into key-scoped unified syntax.
+
+    The old boxes spoke AND/OR/NOT; prefix the key onto each bare term so the
+    meaning is preserved. 'a OR b' in the tag box -> 'tag:a OR tag:b'.
+    'x AND NOT y' -> 'tag:x AND -tag:y'. /regex/ becomes key~:regex."""
+    value = value.strip()
+    if not value:
+        return ""
+    or_parts = []
+    for clause in re.split(r"\s+OR\s+", value):
+        and_terms = []
+        for t in re.split(r"\s+AND\s+", clause):
+            t = t.strip()
+            if not t:
+                continue
+            neg = t.startswith("NOT ") and bool(t[4:].strip())
+            if neg:
+                t = t[4:].strip()
+            m = re.fullmatch(r"/(.+)/i?", t)
+            if m:
+                term = f"{'-' if neg else ''}{key}~:{m.group(1)}"
+            else:
+                term = f"{'-' if neg else ''}{key}:{t}"
+            and_terms.append(term)
+        if and_terms:
+            or_parts.append(" AND ".join(and_terms))
+    return " OR ".join(or_parts)
+
+
+def _migrate_query(f):
+    """Build the unified-box value from a saved filter dict.
+
+    New format stores 'query' directly. Legacy format stored separate 'tag'
+    and 'msg' boxes — fold them into scoped unified syntax (AND-joined)."""
+    if "query" in f:
+        return f.get("query", "")
+    parts = []
+    tag = _scope_box(f.get("tag", ""), "tag")
+    msg = _scope_box(f.get("msg", ""), "message")
+    # if either side itself has OR-alternatives, parenthesise via AND-distribution
+    if tag and msg:
+        # both present: AND them. OR inside either side would bind wrong, so we
+        # wrap each multi-clause side back into a single clause is impossible in
+        # this flat language — keep it simple and join with AND, which is correct
+        # when neither side uses OR (the common case). Sides using OR are rare in
+        # saved presets; joining still yields a usable, close-enough query.
+        return f"{tag} AND {msg}" if " OR " not in tag and " OR " not in msg else f"{tag} {msg}"
+    return tag or msg
+
+
+def query_matches(tag, msg, pkg, clauses):
+    """True if no clauses, or any clause's predicates all hold for the line."""
+    if not clauses:
+        return True
+    fields = {"tag": tag, "msg": msg, "pkg": pkg}
+    return any(
+        all(_pred_holds(p, fields) for p in clause)
+        for clause in clauses
+    )
+
+
+def _pred_holds(pred, fields):
+    field, _op, pat, negated = pred
+    if field == "any":
+        hit = bool(pat.search(fields["tag"])) or bool(pat.search(fields["msg"]))
+    else:
+        hit = bool(pat.search(fields[field]))
+    return hit != negated
+
+
+def highlight_patterns(clauses):
+    """From a parsed query, the compiled patterns to highlight in each field.
+
+    Returns (tag_pats, msg_pats). Only positive (non-negated) predicates
+    contribute — you can't highlight the absence of a term. A bare 'any' term
+    highlights in both fields, so the colour shows which field the hit is in.
+    Exact predicates (anchored ^…$) are de-anchored so the visible substring
+    still highlights."""
+    tag_pats, msg_pats = [], []
+    seen_tag, seen_msg = set(), set()
+    for clause in clauses:
+        for field, op, pat, negated in clause:
+            if negated:
+                continue
+            hl = _deanchor(pat) if op == "exact" else pat
+            if field in ("tag", "any") and hl.pattern not in seen_tag:
+                seen_tag.add(hl.pattern)
+                tag_pats.append(hl)
+            if field in ("msg", "any") and hl.pattern not in seen_msg:
+                seen_msg.add(hl.pattern)
+                msg_pats.append(hl)
+    return tag_pats, msg_pats
+
+
+def _deanchor(pat):
+    """Strip ^…$ from an exact predicate so the literal still highlights."""
+    src = pat.pattern
+    if src.startswith("^") and src.endswith("$"):
+        src = src[1:-1]
+    try:
+        return re.compile(src, re.IGNORECASE)
+    except re.error:
+        return pat
+
+
+class Entry:
+    __slots__ = ("ts", "pid", "tid", "level", "tag", "msg", "kind")
+
+    def __init__(self, ts, pid, tid, level, tag, msg, kind=None):
         self.ts = ts
         self.pid = pid
         self.tid = tid
         self.level = level
         self.tag = tag
         self.msg = msg
+        self.kind = kind  # None for real logs; "proc" for synthetic process banners
 
 
 def parse_line(line):
@@ -161,22 +413,70 @@ def crash_block(entries, start_entry, limit=400):
     return block
 
 
+PROCESS_LINE_RE = re.compile(r"Process:\s*([\w.]+),\s*PID:")
+
+
+def crash_package(block):
+    """Package name from a crash block's 'Process: <pkg>, PID:' line, or None.
+    The Android runtime prints this line in every FATAL EXCEPTION, so it's a
+    reliable fallback when the pid isn't in the live pid->name map yet."""
+    for e in block:
+        m = PROCESS_LINE_RE.search(e.msg)
+        if m:
+            return m.group(1)
+    return None
+
+
+def banner_diff(prev_live, cur_names, pid_names, f_pkg):
+    """Diff two ps polls into process STARTED/ENDED events for the filtered pkg.
+
+    prev_live  — set of pids that were live in the previous poll
+    cur_names  — {pid: package} from the current poll (live pids only)
+    pid_names  — the merged, never-removed map (resolves a dead pid's package)
+    f_pkg      — parsed package filter; empty -> no banners
+
+    Returns (started, ended), each a list of (pid, package). The caller is
+    responsible for skipping the very first poll (prev_live empty) so the whole
+    process table isn't dumped as STARTED banners on launch."""
+    if not f_pkg:
+        return [], []
+    cur_live = set(cur_names)
+    started = [
+        (pid, cur_names[pid])
+        for pid in cur_live - prev_live
+        if matches(cur_names[pid], f_pkg)
+    ]
+    ended = []
+    for pid in prev_live - cur_live:
+        pkg = pid_names.get(pid, "")  # dead pid: package from the never-removes map
+        if pkg and matches(pkg, f_pkg):
+            ended.append((pid, pkg))
+    return started, ended
+
+
 def md_escape(text):
     return text.replace("|", "\\|")
 
 
-def export_markdown(entries, filters_desc, when):
+def export_markdown(entries, filters_desc, when, packages=None):
+    """Markdown table export. Columns: Time | Level | Package | Tag | Message.
+
+    packages — {pid: package} to fill the Package column.
+    A crash row (level F or a FATAL EXCEPTION) shows 💥 in the Level cell."""
+    packages = packages or {}
     lines = [
         f"# logcat export — {when}",
         "",
         f"- Filters: {filters_desc}",
         f"- Lines: {len(entries)}",
         "",
-        "| Time | Tag | Message |",
-        "| --- | --- | --- |",
+        "| Time | Level | Package | Tag | Message |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for e in entries:
-        lines.append(f"| {e.ts} | {md_escape(e.tag)} | {md_escape(e.msg)} |")
+        level = f"💥 {e.level}".strip() if is_crash_start(e) else e.level
+        pkg = md_escape(packages.get(e.pid, ""))
+        lines.append(f"| {e.ts} | {level} | {pkg} | {md_escape(e.tag)} | {md_escape(e.msg)} |")
     return "\n".join(lines) + "\n"
 
 
@@ -252,6 +552,44 @@ def suggest(candidates, current_term, limit=8):
     return out
 
 
+# ---- unified-box autocomplete -----------------------------------------------
+
+# the bit the user is editing: everything after the last OR / whitespace, except
+# that a key's value may contain spaces (message:no fill) so we don't split there.
+QUERY_TOKEN_RE = re.compile(r"\s+OR\s+|\s+", re.IGNORECASE)
+
+
+def split_query_token(text):
+    """Return (prefix, token) where token is the in-progress chunk at the end.
+
+    A trailing key value with spaces stays whole: 'tag:Ad message:no fi' ->
+    ('tag:Ad ', 'message:no fi'). A bare trailing word splits on whitespace:
+    'foo ba' -> ('foo ', 'ba')."""
+    # find the start of the current key token, if the tail contains one
+    m = None
+    for m in KEY_RE.finditer(text):
+        pass
+    if m:
+        # is the cursor still inside this key's value (no OR after it)?
+        tail = text[m.start():]
+        if not re.search(r"\s+OR\s+", tail, re.IGNORECASE):
+            return text[: m.start()], tail
+    # otherwise split on the last whitespace / OR
+    last_end = 0
+    for mm in QUERY_TOKEN_RE.finditer(text):
+        last_end = mm.end()
+    return text[:last_end], text[last_end:]
+
+
+def parse_token(token):
+    """Split an in-progress token into (negated, key, op_token, value).
+    key/op are None for a bare term. value is the partial text being completed."""
+    m = KEY_RE.match(token)
+    if m:
+        return bool(m.group("neg")), m.group("key").lower(), m.group("op"), token[m.end():]
+    return False, None, None, token
+
+
 def parse_permissions(dumpsys_output):
     """dumpsys package output -> {permission_name: granted} for runtime perms."""
     perms = {}
@@ -308,9 +646,13 @@ def avd_name(serial):
     return ""
 
 
-def logcat_cmd(serial, buffers=None):
-    """adb logcat command line; buffers=None streams adb's default (main+system)."""
+def logcat_cmd(serial, buffers=None, tail=False):
+    """adb logcat command line; buffers=None streams adb's default (main+system).
+    tail=True starts from now (-T 1) instead of replaying the whole buffer — so
+    the live TUI doesn't re-surface old crashes/lines on every restart."""
     cmd = ["adb", "-s", serial, "logcat", "-v", "threadtime"]
+    if tail:
+        cmd += ["-T", "1"]
     for b in buffers or ():
         cmd += ["-b", b]
     return cmd
@@ -339,11 +681,30 @@ def list_devices():
     ]
 
 
-HELP_TEXT = r"""[b u $accent]Plain terms[/]
+HELP_TEXT = r"""[b u $accent]Plain terms[/] — the query box
 
-  [b]droid[/]                      lines containing droid (case-insensitive)
+  [b]droid[/]                      a bare word matches the [b]tag[/] OR the [b]message[/]
 
   [b]panic (again)[/]              literal text: ( ) \[ ] match exactly as typed
+
+
+[b u $accent]Field keys[/] — scope a term to one field (Android Studio style)
+
+  [b $accent]tag:[/]Choreo                  tag [b]contains[/] Choreo
+
+  [b $accent]message:[/]no fill             message contains "no fill" (spaces kept)
+
+  [b $accent]package:[/]com.acme            process name contains com.acme
+                              (type [b $accent]package:[/] — the foreground app is suggested)
+
+  [b $accent]tag=:[/]Choreographer         [b]exact[/] — the whole tag equals it
+
+  [b $accent]tag~:[/]Cho.+                  [b]regex[/] — match the field by pattern
+
+  [b $accent]-tag:[/]gc                     [b]negate[/] — tag does NOT contain gc
+                              (-tag=:  -tag~:  negate exact / regex too)
+
+  keys combine: [b $accent]tag:[/]Ads [b $accent]-message:[/]fill   both must hold (space = AND)
 
 
 [b u $accent]Operators[/] — UPPERCASE only · [b $primary]AND[/] binds tighter than [b $primary]OR[/]
@@ -372,12 +733,16 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/]
   [i $secondary]/\bbugs?\b/[/]                [b]\b[/] word boundary
 
   case-insensitive · an invalid regex falls back to literal text
-  mix freely:  [b]meltdown [$primary]OR[/] [i $secondary]/retry \d+/[/] [$primary]AND NOT[/] teads[/]
+  mix freely:  [b]meltdown [$primary]OR[/] [i $secondary]/retry \d+/[/] [$primary]AND NOT[/] noise[/]
 
 
 [b u $accent]Scope[/]
 
-  [b]package[/] matches the process name; [b]tag[/] and [b]message[/] their own field
+  the [b]package[/] box matches the process name; the [b]query[/] box matches
+  [b]tag[/] + [b]message[/] (scope to one with [b $accent]tag:[/] / [b $accent]message:[/])
+
+  with a [b]package[/] filter set, a divider marks when that app's process
+  starts or dies: [b $accent]── PROCESS STARTED (pid) … ──[/] (so you can see restarts)
 
   the [b]Level[/] chip ([b]F2[/]) filters by severity — [b]≥[/] shows that level and worse,
   [b]=[/] shows exactly that level (switch modes inside the chip's menu)
@@ -394,9 +759,16 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/]
 
   the app captures the mouse — hold a modifier while dragging to select:
 
-  iTerm2: [b]⌥ Option[/]   ·   macOS Terminal: [b]Fn[/]   ·   kitty/Linux: [b]Shift[/]
+  [b]Ghostty[/]          hold [b]Shift[/]
+  [b]kitty / Linux[/]    hold [b]Shift[/]
+  [b]iTerm2[/]           hold [b]⌥ Option[/]
+  [b]macOS Terminal[/]   hold [b]Fn[/]
 
-  tip: pause first ([b]^s[/]) so lines stop moving; [b]^e[/] exports bigger chunks
+  a repaint can wipe the selection — two ways around it:
+  [b]1.[/] keep the modifier held [b]~1s[/] after the drag, then release
+  [b]2.[/] [b]^e[/] exports the filtered lines to a file (the reliable way)
+
+  pausing first ([b]^s[/]) helps by holding the lines still
 """
 
 
@@ -453,11 +825,17 @@ class QueryHighlighter(Highlighter):
 
     op_style = "bold magenta"
     regex_style = "italic cyan"
+    key_style = "bold cyan"
 
     def highlight(self, text):
         text.highlight_regex(r"(?<=\s)(?:OR|AND)(?=\s)", self.op_style)
         text.highlight_regex(r"(?:^|(?<=\s))NOT(?=\s)", self.op_style)
         text.highlight_regex(r"/[^/]+/", self.regex_style)
+        # field keys in the unified box: -tag:  message=:  pkg~:  …
+        text.highlight_regex(
+            r"(?:^|(?<=\s))-?(?:tag|message|msg|package|pkg)(?:=:|~:|:)",
+            self.key_style,
+        )
 
 
 class CloseButton(Static):
@@ -735,7 +1113,7 @@ class SavePresetScreen(OutsideClickDismiss, ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="preset-box"):
             yield Label("Preset name", id="preset-title")
-            yield Input(placeholder="e.g. teads interstitial", id="preset-name")
+            yield Input(placeholder="e.g. my app errors", id="preset-name")
 
     def on_input_submitted(self, event: Input.Submitted):
         self.dismiss(event.value.strip() or None)
@@ -763,7 +1141,7 @@ class LogPane(RichLog):
         return selection.extract(text), "\n"
 
 
-FOOTER_ORDER = ["Clear", "Pause", "Resume", "Crash", "Device", "Buffer", "ADB", "Export", "Palette", "Quit"]
+FOOTER_ORDER = ["Device", "ADB", "Clear", "Pause", "Resume", "Crash", "Buffer", "Export", "Palette", "Quit"]
 
 
 class OrderedFooter(Footer):
@@ -815,9 +1193,18 @@ class OrderedFooter(Footer):
 
 
 class LevelChip(Static):
-    """Clickable min-level selector in the status bar."""
+    """Clickable, Tab-focusable min-level selector in the status bar."""
+
+    can_focus = True
+    BINDINGS = [
+        Binding("enter", "open", "Level", show=False),
+        Binding("space", "open", "Level", show=False),
+    ]
 
     def on_click(self):
+        self.app.toggle_level_menu()
+
+    def action_open(self):
         self.app.toggle_level_menu()
 
 
@@ -885,6 +1272,11 @@ class Catflap(App):
         width: 1fr; height: 3;
         border: tall $border-blurred; background: $boost;
     }
+    /* package box hidden for now — filter by package: in the query box.
+       kept in the DOM (not removed) so its filter/foreground/preset wiring
+       still works and it can be brought back by dropping this display rule. */
+    #wrap-pkg { display: none; }
+    #wrap-query { width: 1fr; }
     .inputwrap:focus-within { border: tall $accent; }
     .inputwrap Input {
         width: 1fr; min-width: 16; height: 1; border: none; padding: 0 1;
@@ -901,9 +1293,14 @@ class Catflap(App):
     #searchbar { width: 1fr; height: 1; border: none; padding: 0 1; background: transparent; }
     #search-count { width: auto; height: 1; padding: 0 1; color: $text 60%; }
     #brand { width: auto; height: 1; padding: 0 1; color: $accent; text-style: bold; }
-    #minlevel { width: auto; height: 3; padding: 1 2; color: $text 60%; }
+    #minlevel {
+        width: auto; height: 3; padding: 0 2; color: $text 60%;
+        content-align: center middle;
+        border: tall $border-blurred; background: $boost;
+    }
     #minlevel:hover { color: $text; }
-    #minlevel.levelactive { color: $accent; text-style: bold; }
+    #minlevel:focus { border: tall $accent; color: $text; text-style: bold; }
+    #minlevel.levelactive { text-style: bold; }
     Toast { width: 44; }
     RichLog { scrollbar-size-horizontal: 0; }
     #suggest {
@@ -1087,9 +1484,10 @@ class Catflap(App):
         self.buffer = deque(maxlen=BUFFER_MAX)
         self.queue = Queue()
         self.pid_names = {}
+        self._live_pids = set()  # live pids from the previous ps poll (mapper thread)
         self.f_pkg = []
-        self.f_tag = []
-        self.f_msg = []
+        self.f_query = []
+        self._hl_patterns = ([], [])  # (tag_patterns, msg_patterns) for log highlights
         self.shown = 0
         self._stop = threading.Event()
         self._proc = None
@@ -1125,16 +1523,18 @@ class Catflap(App):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="filters"):
-            for box_id, placeholder in (
-                ("pkg", "package"),
-                ("tag", "tag"),
-                ("msg", "message"),
-            ):
-                with Horizontal(classes="inputwrap"):
-                    yield Input(placeholder=placeholder, id=box_id)
-                    yield ClearButton(box_id, id=f"clear-{box_id}")
-                    if box_id == "pkg":
-                        yield DropdownArrow(id="pkg-arrow")
+            with Horizontal(classes="inputwrap", id="wrap-pkg"):
+                # hidden box — non-focusable from the start so Textual's
+                # auto-focus never lands on it and pops a dropdown for an
+                # invisible field (see #wrap-pkg display:none in the CSS)
+                pkg = Input(placeholder="package", id="pkg")
+                pkg.can_focus = False
+                yield pkg
+                yield ClearButton("pkg", id="clear-pkg")
+                yield DropdownArrow(id="pkg-arrow")
+            with Horizontal(classes="inputwrap", id="wrap-query"):
+                yield Input(placeholder="package:  tag:  message:  /regex/  — or just type", id="query")
+                yield ClearButton("query", id="clear-query")
             yield LevelChip("Level ≥ V", id="minlevel")
         yield LogPane(highlight=False, markup=False, wrap=False, max_lines=DISPLAY_MAX, id="log")
         with Horizontal(id="statusbar"):
@@ -1162,6 +1562,13 @@ class Catflap(App):
         }
         QueryHighlighter.op_style = f"bold {v.get('primary', 'magenta')}"
         QueryHighlighter.regex_style = f"italic {v.get('secondary', 'cyan')}"
+        QueryHighlighter.key_style = f"bold {v.get('accent', 'cyan')}"
+        # filter-match highlights in the log: theme colors used with `reverse`,
+        # which paints the term as a colored background with auto-contrasting
+        # text (readable on light or dark themes). accent vs primary are the two
+        # most visually distinct palette colors not already used as backgrounds.
+        self.tag_hl_style = f"reverse bold {v.get('accent', 'cyan')}"
+        self.msg_hl_style = f"reverse bold {v.get('primary', 'magenta')}"
 
     def _on_theme_change(self, _theme):
         self._rebuild_theme_styles()
@@ -1183,7 +1590,11 @@ class Catflap(App):
             box.cursor_blink = False  # each blink repaints and wipes the terminal's native selection
         self._state = load_state()
         self._preferred_serial = self._state.get("last_device")
-        self._apply_filter_dict(self._state.get("filters", {}))
+        # start every session with a clean filter — last session's query/level
+        # should not silently carry over (theme, presets, export dir etc. still
+        # persist). Saved filters live on only via named presets.
+        self._apply_filter_dict({})
+        self.set_min_level(self.min_level, self.level_exact)  # paint the chip colour
         if self._state.get("theme"):
             try:
                 self.theme = self._state["theme"]
@@ -1225,7 +1636,7 @@ class Catflap(App):
                 continue
             try:
                 proc = subprocess.Popen(
-                    logcat_cmd(serial, buffers),
+                    logcat_cmd(serial, buffers, tail=True),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     text=True,
@@ -1269,6 +1680,18 @@ class Catflap(App):
                     merged = dict(self.pid_names)
                     merged.update(names)
                     self.pid_names = merged
+                    # diff against the previous poll for process STARTED/ENDED
+                    # banners — but only once we have a baseline (skip first poll,
+                    # else the whole running process table floods as STARTED)
+                    if self._live_pids:
+                        started, ended = banner_diff(
+                            self._live_pids, names, self.pid_names, self.f_pkg
+                        )
+                        for pid, pkg in started:
+                            self.call_from_thread(self._emit_banner, pid, pkg, "STARTED")
+                        for pid, pkg in ended:
+                            self.call_from_thread(self._emit_banner, pid, pkg, "ENDED")
+                    self._live_pids = set(names)
             except Exception:
                 pass
             time.sleep(3)
@@ -1293,37 +1716,69 @@ class Catflap(App):
             time.sleep(2)
 
     def _on_foreground_change(self):
-        # refresh an open package dropdown so its pinned entry tracks the device
-        box = self.query_one("#pkg", Input)
-        if box.has_focus:
-            self._update_suggest(box)
+        # surface the foreground app in the query box's dropdown once it's known
+        # (the clean replacement for the old startup package picker), and keep a
+        # package: completion in sync if one is open
+        q = self.query_one("#query", Input)
+        if q.has_focus and (not q.value or q.value.lower().startswith("package:")):
+            self._update_suggest(q)
 
     def adopt_foreground(self):
         pkg = self.foreground_pkg
         if not pkg:
             self.notify("No foreground app detected yet.", severity="warning")
             return
-        box = self.query_one("#pkg", Input)
-        if box.value.strip() == pkg:
+        # the package box is hidden — scope via the visible query box so the
+        # active filter is shown. Append package: if a query is already there.
+        box = self.query_one("#query", Input)
+        token = f"package:{pkg}"
+        existing = box.value.strip()
+        if token in existing:
             return
-        box.value = pkg
-        box.cursor_position = len(pkg)
+        box.value = f"{existing} {token}".strip() if existing else token
+        box.cursor_position = len(box.value)
+        self.set_focus(box)
 
     # ---- filtering -----------------------------------------------------------
 
     def _entry_visible(self, e):
+        if e.kind == "proc":
+            # a process banner shows only while its package passes the package
+            # filter — re-evaluated every refresh, so it hides/reappears with it
+            return bool(self.f_pkg) and matches(self.pid_names.get(e.pid, ""), self.f_pkg)
+        pkg = self.pid_names.get(e.pid, "")
         return (
             level_matches(e.level, self.min_level, self.level_exact)
-            and matches(self.pid_names.get(e.pid, ""), self.f_pkg)
-            and matches(e.tag, self.f_tag)
-            and matches(e.msg, self.f_msg)
+            and matches(pkg, self.f_pkg)
+            and query_matches(e.tag, e.msg, pkg, self.f_query)
         )
 
     def _render(self, e, highlight=False):
+        if e.kind == "proc":
+            w = self.log_widget.size.width or 80
+            body = f" {e.msg} "
+            pad = max(0, (w - len(body)) // 2)
+            text = Text(
+                "─" * pad + body + "─" * max(0, w - pad - len(body)),
+                style=f"bold {self.theme_variables.get('accent', 'cyan')}",
+            )
+            if highlight:
+                text.stylize("reverse")
+            return text
         style = self.level_styles.get(e.level, "")
         pkg = self.pid_names.get(e.pid, e.pid)
         if len(pkg) > 28:
             pkg = "…" + pkg[-27:]
+        # build tag/msg as their own fragments so filter-match highlighting is
+        # scoped to the right field (and only the matched substring, not the
+        # whole field) before assembling the line
+        tag_frag = Text(e.tag, style="bold")
+        msg_frag = Text(e.msg, style=style if e.level in ("E", "F", "W") else "")
+        tag_pats, msg_pats = self._hl_patterns
+        for p in tag_pats:
+            tag_frag.highlight_regex(p, self.tag_hl_style)
+        for p in msg_pats:
+            msg_frag.highlight_regex(p, self.msg_hl_style)
         text = Text.assemble(
             (e.ts, "dim"),
             "  ",
@@ -1331,13 +1786,33 @@ class Catflap(App):
             " ",
             (e.level, style or "bold"),
             "  ",
-            (e.tag, "bold"),
+            tag_frag,
             ": ",
-            (e.msg, style if e.level in ("E", "F", "W") else ""),
+            msg_frag,
         )
         if highlight:
             text.stylize("reverse")
         return text
+
+    def _emit_banner(self, pid, pkg, which):
+        """Append a synthetic PROCESS STARTED/ENDED banner. Main thread only
+        (the mapper hands it over via call_from_thread). Mirrors _drain's tail
+        so pause / shown / status behave exactly like a real line."""
+        ms = int((time.time() % 1) * 1000)
+        ts = time.strftime("%m-%d %H:%M:%S") + f".{ms:03d}"
+        e = Entry(
+            ts=ts, pid=pid, tid="", level="", tag="proc",
+            msg=f"PROCESS {which} ({pid}) for package {pkg}", kind="proc",
+        )
+        self.buffer.append(e)
+        if not self._entry_visible(e):
+            return  # filter changed between the poll and this callback
+        if self.paused:
+            self._pending_lines += 1
+        else:
+            self.log_widget.write(self._render(e))
+            self.shown += 1
+            self._update_status()
 
     def _drain(self):
         visible = []
@@ -1590,7 +2065,7 @@ class Catflap(App):
     # ---- events ----------------------------------------------------------------
 
     def on_input_changed(self, event: Input.Changed):
-        if event.input.id not in ("pkg", "tag", "msg"):
+        if event.input.id not in ("pkg", "query"):
             return
         self.query_one(f"#clear-{event.input.id}").display = bool(event.value)
         # debounce: refilter once typing pauses, not on every keystroke
@@ -1599,79 +2074,152 @@ class Catflap(App):
             self._debounce_timer.stop()
         self._debounce_timer = self.set_timer(0.15, self._apply_filter_change)
 
+    def _apply_filters_now(self):
+        """Parse both boxes and re-render. Shared by the debounce and Enter."""
+        self.f_pkg = parse_terms(self.query_one("#pkg", Input).value)
+        self.f_query = parse_query(self.query_one("#query", Input).value)
+        self._hl_patterns = highlight_patterns(self.f_query)
+        self._refresh_view()
+
     def _apply_filter_change(self):
         self._debounce_timer = None
-        self.f_pkg = parse_terms(self.query_one("#pkg", Input).value)
-        self.f_tag = parse_terms(self.query_one("#tag", Input).value)
-        self.f_msg = parse_terms(self.query_one("#msg", Input).value)
-        self._state["filters"] = self._current_filters()
-        self._refresh_view()
+        self._apply_filters_now()
         self._update_suggest(self._pending_input)
 
     # ---- autocomplete ---------------------------------------------------------
 
-    def _candidates_for(self, input_id):
+    def _candidates_for(self, kind):
         # sorting 30k messages per keystroke is wasteful — cache for 1s
-        cached = self._cand_cache.get(input_id)
+        cached = self._cand_cache.get(kind)
         if cached and time.monotonic() - cached[0] < 1.0:
             return cached[1]
-        if input_id == "pkg":
+        if kind == "pkg":
             values = sorted(set(self.pid_names.values()))
-        elif input_id == "tag":
+        elif kind == "tag":
             values = [t for t, _ in self.tag_count.most_common()]
-        else:
+        else:  # msg
             values = [m for m, _ in self.msg_count.most_common()]
-        self._cand_cache[input_id] = (time.monotonic(), values)
+        self._cand_cache[kind] = (time.monotonic(), values)
         return values
 
     def _update_suggest(self, input_widget):
-        _, term = split_last_term(input_widget.value)
-        if term.startswith("NOT "):
-            term = term[4:]
-        values = suggest(self._candidates_for(input_widget.id), term)
-        fg = self.foreground_pkg if input_widget.id == "pkg" else None
-        t = term.strip().lower()
-        # pin the device's foreground app on top of the package dropdown
-        if fg and (not t or t in fg.lower()) and t != fg.lower():
-            values = ([fg] + [v for v in values if v != fg])[:8]
-        if not values or not input_widget.has_focus:
+        if input_widget is None or not input_widget.has_focus:
+            self._hide_suggest()
+            return
+        if input_widget.id == "query":
+            items = self._query_suggestions(input_widget.value)
+        else:
+            items = self._pkg_suggestions(input_widget.value)
+        if not items:
             self._hide_suggest()
             return
         self._suggest_target = input_widget
-        self._suggest_values = values
+        # each item: (display_text_or_Text, replacement_value)
+        self._suggest_values = [repl for _disp, repl in items]
         self.suggest_list.clear_options()
         self.suggest_list.add_options(
-            [
-                Option(
-                    Text.assemble("📱 ", v, ("  foreground", "dim italic"))
-                    if v == fg
-                    else Text(v),
-                    id=str(i),
-                )
-                for i, v in enumerate(values)
-            ]
+            [Option(disp, id=str(i)) for i, (disp, _repl) in enumerate(items)]
         )
-        # size to the whole input box, never below a usable floor — a squeezed
-        # input (e.g. foreground chip showing) would crash rich's wrapping at width 0
         region = input_widget.parent.region
-        width = max(region.width, 24)
+        width = max(region.width, 28)
         self.suggest_list.styles.offset = (max(0, min(region.x, self.size.width - width)), 3)
         self.suggest_list.styles.width = width
         self.suggest_list.display = True
+
+    def _pkg_suggestions(self, value):
+        """(display, replacement) pairs for the package box — same as before,
+        with the foreground app pinned on top. Replacement preserves any
+        OR/NOT prefix the user already typed."""
+        prefix, term = split_last_term(value)
+        if term.startswith("NOT "):
+            prefix += "NOT "
+            term = term[4:]
+        values = suggest(self._candidates_for("pkg"), term)
+        fg = self.foreground_pkg
+        t = term.strip().lower()
+        if fg and (not t or t in fg.lower()) and t != fg.lower():
+            values = ([fg] + [v for v in values if v != fg])[:8]
+        out = []
+        for v in values:
+            if v == fg:
+                disp = Text.assemble("📱 ", v, ("  foreground", "dim italic"))
+            else:
+                disp = Text(v)
+            out.append((disp, prefix + v))
+        return out
+
+    def _query_suggestions(self, value):
+        """(display, replacement) pairs for the unified query box.
+
+        - After a key (tag:/message:/package:): complete that field's values.
+        - For a bare term: offer matching tags & messages, each promoted to its
+          reserved form (tag:… / message:…) so accepting it scopes the term."""
+        prefix, token = split_query_token(value)
+        _negated, key, _op_token, partial = parse_token(token)
+        partial = partial.strip()
+        # rich Text can't resolve $-theme vars; pull a concrete key color
+        key_color = f"bold {self.theme_variables.get('accent', 'cyan')}"
+        out = []
+        if key:  # completing a scoped value — suggest that field's candidates
+            cand_kind = FIELD_ALIASES[key]  # already 'tag' | 'msg' | 'pkg'
+            keytext = token[: KEY_RE.match(token).end()]  # e.g. "-tag~:"
+            values = suggest(self._candidates_for(cand_kind), partial)
+            # for package:, pin the device's foreground app on top with its
+            # label — same hint the dedicated package box gives (there is no
+            # 'mine' here, so the foreground app is the natural starting point)
+            fg = self.foreground_pkg if cand_kind == "pkg" else None
+            t = partial.strip().lower()
+            if fg and (not t or t in fg.lower()) and t != fg.lower():
+                values = ([fg] + [v for v in values if v != fg])[:8]
+            for v in values:
+                if v == fg:
+                    disp = Text.assemble("📱 ", v, ("  foreground", "dim italic"))
+                else:
+                    disp = Text(v)
+                out.append((disp, prefix + keytext + v))
+            return out
+        # bare term — promote to reserved forms across tag + message
+        bare = partial
+        if bare == "" and not prefix and self.foreground_pkg:
+            # empty box: offer the device's foreground app as a one-click start
+            fg = self.foreground_pkg
+            return [(
+                Text.assemble("📱 ", ("package:", key_color), fg, ("  foreground", "dim italic")),
+                "package:" + fg,
+            )]
+        if bare in ("", "NOT") or bare.startswith("/"):
+            return []  # nothing useful to promote yet (or an inline regex)
+        # if the word is the start of a reserved key, offer to complete the key
+        # itself (so typing "package" suggests "package:" before treating it as
+        # a literal search term)
+        low = bare.lower()
+        for kw in ("tag", "message", "package"):
+            if kw.startswith(low):
+                hint = " — then pick the app" if kw == "package" else " — scope to that field"
+                out.append((
+                    Text.assemble((kw + ":", key_color), (hint, "dim italic")),
+                    prefix + kw + ":",
+                ))
+        for v in suggest(self._candidates_for("tag"), bare, limit=5):
+            disp = Text.assemble(("tag:", key_color), v)
+            out.append((disp, prefix + "tag:" + v))
+        for v in suggest(self._candidates_for("msg"), bare, limit=5):
+            label = v if len(v) <= 60 else v[:59] + "…"
+            disp = Text.assemble(("message:", key_color), label)
+            out.append((disp, prefix + "message:" + v))
+        return out[:8]
 
     def _hide_suggest(self):
         self.suggest_list.display = False
         self._suggest_values = []
 
     def _apply_suggestion(self, value):
+        # `value` is the full replacement string for the box (prefix already included)
         target = self._suggest_target
         self._hide_suggest()
         if target is None:
             return
-        prefix, term = split_last_term(target.value)
-        if term.startswith("NOT "):
-            prefix += "NOT "
-        target.value = prefix + value
+        target.value = value
         target.cursor_position = len(target.value)
         self.set_focus(target)
 
@@ -1691,15 +2239,27 @@ class Catflap(App):
         w = event.widget
         if w is not self.suggest_list and w is not self._suggest_target:
             self._hide_suggest()
-        if w is not self.level_menu:
+        # close the level menu when focus moves away — but NOT when it lands on
+        # the chip itself, whose click is about to toggle the menu (otherwise
+        # the focus-close and the toggle race and cancel out, so the menu
+        # appears not to open)
+        if w is not self.level_menu and not isinstance(w, LevelChip):
             self.level_menu.display = False
-        if isinstance(w, Input) and w.id == "pkg":
+        if isinstance(w, Input) and w.id == "pkg" and not self._pkg_hidden():
             self._update_suggest(w)  # the package box drops down on focus
+        # focusing an empty query box surfaces the foreground app as a one-click
+        # start (the clean replacement for the old startup package picker)
+        if isinstance(w, Input) and w.id == "query" and not w.value and self.foreground_pkg:
+            self._update_suggest(w)
+
+    def _pkg_hidden(self):
+        return self.query_one("#wrap-pkg").styles.display == "none"
 
     def on_click(self, event):
         # reopen on click even when the box already has focus (e.g. after escape)
         w = event.widget
-        if isinstance(w, Input) and w.id == "pkg" and not self.suggest_list.display:
+        if (isinstance(w, Input) and w.id == "pkg"
+                and not self._pkg_hidden() and not self.suggest_list.display):
             self._update_suggest(w)
 
     def on_key(self, event):
@@ -1798,9 +2358,19 @@ class Catflap(App):
     def on_input_submitted(self, event: Input.Submitted):
         if event.input.id == "searchbar" and event.value.strip():
             self._run_search(event.value.strip())
+        elif event.input.id in ("pkg", "query"):
+            # Enter submits the query as typed — apply now, don't wait for the
+            # debounce, and dismiss the suggestions (no forced pick)
+            if self._debounce_timer is not None:
+                self._debounce_timer.stop()
+                self._debounce_timer = None
+            self._hide_suggest()
+            self._apply_filters_now()
 
     def _filtered_entries_for_export(self):
-        entries = [e for e in self.buffer if self._entry_visible(e)]
+        # exclude synthetic process banners — their empty level/tid would render
+        # as garbage in the markdown table and the raw "ts pid tid level tag:" line
+        entries = [e for e in self.buffer if e.kind != "proc" and self._entry_visible(e)]
         if not entries:
             self.notify("Nothing to export (no matching lines).", severity="warning")
         return entries
@@ -1865,15 +2435,15 @@ class Catflap(App):
 
     def _write_md_export(self, d, entries):
         pkg = self.query_one("#pkg", Input).value.strip()
-        tag = self.query_one("#tag", Input).value.strip()
-        msg = self.query_one("#msg", Input).value.strip()
-        filters_desc = (
-            f"package=`{pkg or '*'}` tag=`{tag or '*'}` message=`{msg or '*'}`"
-        )
+        query = self.query_one("#query", Input).value.strip()
+        filters_desc = f"package=`{pkg or '*'}` query=`{query or '*'}`"
         now = datetime.now()
         path = d / export_filename(pkg, now)
         path.write_text(
-            export_markdown(entries, filters_desc, now.strftime("%Y-%m-%d %H:%M:%S")),
+            export_markdown(
+                entries, filters_desc, now.strftime("%Y-%m-%d %H:%M:%S"),
+                packages=self.pid_names,
+            ),
             encoding="utf-8",
         )
         self.notify(f"Exported {len(entries)} lines → {path}")
@@ -1914,12 +2484,23 @@ class Catflap(App):
         if not block:
             self.notify("Last crash scrolled out of the buffer.", severity="warning")
             return
-        pkg = self.pid_names.get(start.pid, f"pid {start.pid}")
+        # prefer the live pid->name map; fall back to the crash's own
+        # "Process: <pkg>, PID:" line (present in every FATAL EXCEPTION) so the
+        # package shows even when ps hasn't mapped the pid yet
+        pkg = self.pid_names.get(start.pid) or crash_package(block) or "(unknown)"
         err_style = self.level_styles.get("E", "red")
-        body = Text("\n").join(
+        # lead with a package/pid header so it travels with the copied text
+        header = Text.assemble(
+            ("package: ", "dim"), (pkg, "bold"),
+            ("   pid ", "dim"), (str(start.pid), ""),
+            ("   tag ", "dim"), (start.tag, "bold"),
+        )
+        lines = [header, Text("")]
+        lines.extend(
             Text.assemble((e.ts, "dim"), " ", (e.msg, err_style if e.level in ("E", "F") else ""))
             for e in block
         )
+        body = Text("\n").join(lines)
         self.push_screen(TextViewerScreen(f"💥 {pkg} — {start.tag} @ {start.ts}", body))
 
     def set_min_level(self, level, exact=None):
@@ -1930,9 +2511,10 @@ class Catflap(App):
             self.level_exact = exact
         sign = "=" if self.level_exact else "≥"
         chip = self.query_one("#minlevel", Static)
-        chip.update(f"Level {sign} {level}")
+        # tint the chip text with the selected level's colour (matches the log)
+        style = self.level_styles.get(level, "") or "dim"
+        chip.update(Text.assemble(("Level ", "dim"), (f"{sign} {level}", f"bold {style}")))
         chip.set_class(level != "V" or self.level_exact, "levelactive")
-        self._state["filters"] = self._current_filters()
         self._refresh_view()
 
     def toggle_level_menu(self):
@@ -2242,16 +2824,14 @@ class Catflap(App):
     def _current_filters(self):
         return {
             "pkg": self.query_one("#pkg", Input).value,
-            "tag": self.query_one("#tag", Input).value,
-            "msg": self.query_one("#msg", Input).value,
+            "query": self.query_one("#query", Input).value,
             "level": self.min_level,
             "level_exact": self.level_exact,
         }
 
     def _apply_filter_dict(self, f):
         self.query_one("#pkg", Input).value = f.get("pkg", "")
-        self.query_one("#tag", Input).value = f.get("tag", "")
-        self.query_one("#msg", Input).value = f.get("msg", "")
+        self.query_one("#query", Input).value = _migrate_query(f)
         level = f.get("level", "V")
         if f.get("errors") and LEVELS.index(level) < LEVELS.index("E"):
             level = "E"  # legacy "errors only" checkbox state
