@@ -239,6 +239,28 @@ class ParseQueryTest(unittest.TestCase):
         self.assertFalse(qm("-tag~:Fo+", tag="Foo"))
         self.assertTrue(qm("-tag~:Fo+", tag="Bar"))
 
+    def test_not_word_negates_a_key(self):
+        # 'NOT <key>' is equivalent to '-<key>' (both with and without AND)
+        self.assertTrue(qm("tag:Ads AND NOT message:fill", tag="AdsX", msg="loaded"))
+        self.assertFalse(qm("tag:Ads AND NOT message:fill", tag="AdsX", msg="no fill"))
+        self.assertTrue(qm("tag:Ads NOT message:fill", tag="AdsX", msg="loaded"))
+        self.assertFalse(qm("tag:Ads NOT message:fill", tag="AdsX", msg="no fill"))
+
+    def test_not_word_negates_leading_key(self):
+        self.assertTrue(qm("NOT tag:gc", tag="Choreo"))
+        self.assertFalse(qm("NOT tag:gc", tag="GcDaemon"))
+
+    def test_two_not_keys(self):
+        q = "tag:Ads AND NOT message:fill AND NOT tag:Net"
+        self.assertTrue(qm(q, tag="AdsX", msg="loaded"))
+        self.assertFalse(qm(q, tag="AdsNet", msg="loaded"))  # tag:Net excluded
+        self.assertFalse(qm(q, tag="AdsX", msg="no fill"))   # message:fill excluded
+
+    def test_not_inside_key_value_is_literal(self):
+        # only a trailing NOT before a key negates; NOT mid-value stays literal
+        self.assertTrue(qm("message:NOT found", msg="error: NOT found"))
+        self.assertFalse(qm("message:NOT found", msg="all good"))
+
     def test_whitespace_between_keys_is_and(self):
         # both must hold
         self.assertTrue(qm("tag:Ads message:fill", tag="Ads", msg="no fill"))
@@ -264,9 +286,47 @@ class ParseQueryTest(unittest.TestCase):
         self.assertFalse(qm("NOT spam", tag="ham", msg="spam folder"))
 
     def test_multi_word_message_value(self):
-        # text after message: up to the next key is one value (spaces kept)
+        # message keeps the whole phrase (messages routinely contain spaces)
         self.assertTrue(qm("message:no fill", tag="Ads", msg="got no fill today"))
         self.assertFalse(qm("message:no fill", tag="Ads", msg="filled"))
+
+    def test_tag_value_is_single_token_rest_is_bare(self):
+        # tag never has spaces, so 'tag:Choreo skipped' == tag:Choreo AND skipped
+        self.assertTrue(qm("tag:Choreo skipped", tag="Choreographer", msg="skipped 3 frames"))
+        self.assertFalse(qm("tag:Choreo skipped", tag="Choreographer", msg="all good"))
+        self.assertFalse(qm("tag:Choreo skipped", tag="Other", msg="skipped 3 frames"))
+
+    def test_package_value_is_single_token_rest_is_bare(self):
+        # 'package:com.foo crash' == package com.foo AND a 'crash' search
+        self.assertTrue(qm("package:com.foo crash", pkg="com.foo.app", msg="crash now"))
+        self.assertFalse(qm("package:com.foo crash", pkg="com.foo.app", msg="all ok"))
+        self.assertFalse(qm("package:com.foo crash", pkg="com.other", msg="crash now"))
+
+    def test_package_multiple_trailing_bare_terms(self):
+        # each trailing word after a single-token field is its own AND term
+        self.assertTrue(qm("package:com.foo bar baz",
+                           pkg="com.foo.app", msg="bar and baz here"))
+        self.assertFalse(qm("package:com.foo bar baz",
+                            pkg="com.foo.app", msg="only bar"))
+
+    def test_message_phrase_survives_with_other_keys(self):
+        # message keeps its phrase even when a single-token key precedes it
+        self.assertTrue(qm("package:com.foo message:no fill",
+                           pkg="com.foo.app", msg="no fill"))
+        self.assertFalse(qm("package:com.foo message:no fill",
+                            pkg="com.foo.app", msg="loaded"))
+
+    def test_single_token_field_then_or(self):
+        # 'package:com.foo crash OR anr' = (pkg com.foo AND crash) OR anr
+        q = "package:com.foo crash OR anr"
+        self.assertTrue(qm(q, pkg="com.foo.app", msg="crash"))
+        self.assertTrue(qm(q, pkg="com.other", msg="anr in system"))
+        self.assertFalse(qm(q, pkg="com.foo.app", msg="loaded"))
+
+    def test_exact_and_regex_keep_whole_value(self):
+        # =:/~: are not single-token — they take the full value as written
+        self.assertTrue(qm("tag~:Ad Manager", tag="Ad Manager"))   # regex w/ space
+        self.assertTrue(qm("tag=:Ad Hoc", tag="Ad Hoc"))           # exact w/ space
 
     def test_trailing_key_with_no_value_is_noop(self):
         # user mid-typing "tag:" — should match everything (clause empty)

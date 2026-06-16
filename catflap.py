@@ -164,24 +164,51 @@ def _parse_clause(part):
     return preds
 
 
+def _strip_trailing_not(span):
+    """A 'NOT' word at the end of a span negates the key that follows it (so
+    'NOT message:fill' == '-message:fill'). Return (span_without_not, not_flag)."""
+    words = span.split()
+    if words and words[-1] == "NOT":
+        return " ".join(words[:-1]), True
+    return span, False
+
+
 def _parse_and_term(part):
     """A single AND-term — may still hold several keys (space = AND), e.g.
     'tag:Ads -message:fill'. Keys cut it into spans; the leading keyless span
-    becomes bare 'any' predicates."""
+    becomes bare 'any' predicates. A 'NOT' right before a key negates it.
+
+    Value greediness is per field: tag/package values are a single token (they
+    never contain spaces), so 'package:com.foo crash' is package com.foo AND a
+    bare 'crash' search. message values keep the whole phrase ('message:no fill'
+    matches 'no fill'). Exact/regex (=:/~:) always take the whole value."""
     preds = []
     keys = list(KEY_RE.finditer(part))
     if not keys:
         return _bare_predicates(part)
-    preds.extend(_bare_predicates(part[: keys[0].start()]))
+
+    lead, not_next = _strip_trailing_not(part[: keys[0].start()])
+    preds.extend(_bare_predicates(lead))
     for i, m in enumerate(keys):
         end = keys[i + 1].start() if i + 1 < len(keys) else len(part)
-        raw = part[m.end() : end].strip()
+        value_span = part[m.end() : end]
+        raw, not_after = _strip_trailing_not(value_span.strip())
         field = FIELD_ALIASES[m.group("key").lower()]
         op = _op_name(m.group("op"))
-        negated = bool(m.group("neg"))
-        if raw:
+        negated = bool(m.group("neg")) or not_next
+        # tag/package contains: first token is the value, the rest are bare
+        # search terms (those fields never hold spaces, so trailing words are
+        # clearly separate). message — and any exact/regex match — keeps the
+        # whole phrase.
+        if raw and op == "contains" and field in ("tag", "pkg"):
+            first, _, rest = raw.partition(" ")
+            preds.append(compile_predicate(field, op, first, negated))
+            if rest.strip():
+                preds.extend(_bare_predicates(rest))
+        elif raw:
             preds.append(compile_predicate(field, op, raw, negated))
         # a key with no value (trailing "tag:") is an in-progress token — skip
+        not_next = not_after
     return preds
 
 
@@ -657,7 +684,8 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/] — the query box
 
   [b $accent]message:[/]no fill             message contains "no fill" (spaces kept)
 
-  [b $accent]package:[/]mine                process name contains mine
+  [b $accent]package:[/]com.acme            process name contains com.acme
+                              (type [b $accent]package:[/] — the foreground app is suggested)
 
   [b $accent]tag=:[/]Choreographer         [b]exact[/] — the whole tag equals it
 
@@ -721,9 +749,13 @@ HELP_TEXT = r"""[b u $accent]Plain terms[/] — the query box
 
   the app captures the mouse — hold a modifier while dragging to select:
 
-  iTerm2: [b]⌥ Option[/]   ·   macOS Terminal: [b]Fn[/]   ·   kitty/Linux: [b]Shift[/]
+  Ghostty/kitty/Linux: [b]Shift[/]   ·   iTerm2: [b]⌥ Option[/]   ·   macOS Terminal: [b]Fn[/]
 
-  tip: pause first ([b]^s[/]) so lines stop moving; [b]^e[/] exports bigger chunks
+  a repaint can wipe the selection — two ways around it:
+  [b]1.[/] keep the modifier held [b]~1s[/] after the drag, then release
+  [b]2.[/] [b]^e[/] exports the filtered lines to a file (the reliable way)
+
+  pausing first ([b]^s[/]) helps by holding the lines still
 """
 
 
@@ -1227,8 +1259,11 @@ class Catflap(App):
         width: 1fr; height: 3;
         border: tall $border-blurred; background: $boost;
     }
-    #wrap-pkg { width: 2fr; }
-    #wrap-query { width: 3fr; }
+    /* package box hidden for now — filter by package: in the query box.
+       kept in the DOM (not removed) so its filter/foreground/preset wiring
+       still works and it can be brought back by dropping this display rule. */
+    #wrap-pkg { display: none; }
+    #wrap-query { width: 1fr; }
     .inputwrap:focus-within { border: tall $accent; }
     .inputwrap Input {
         width: 1fr; min-width: 16; height: 1; border: none; padding: 0 1;
@@ -1476,11 +1511,16 @@ class Catflap(App):
     def compose(self) -> ComposeResult:
         with Horizontal(id="filters"):
             with Horizontal(classes="inputwrap", id="wrap-pkg"):
-                yield Input(placeholder="package", id="pkg")
+                # hidden box — non-focusable from the start so Textual's
+                # auto-focus never lands on it and pops a dropdown for an
+                # invisible field (see #wrap-pkg display:none in the CSS)
+                pkg = Input(placeholder="package", id="pkg")
+                pkg.can_focus = False
+                yield pkg
                 yield ClearButton("pkg", id="clear-pkg")
                 yield DropdownArrow(id="pkg-arrow")
             with Horizontal(classes="inputwrap", id="wrap-query"):
-                yield Input(placeholder="tag:  message:  /regex/  — or just type", id="query")
+                yield Input(placeholder="package:  tag:  message:  /regex/  — or just type", id="query")
                 yield ClearButton("query", id="clear-query")
             yield LevelChip("Level ≥ V", id="minlevel")
         yield LogPane(highlight=False, markup=False, wrap=False, max_lines=DISPLAY_MAX, id="log")
@@ -1537,7 +1577,10 @@ class Catflap(App):
             box.cursor_blink = False  # each blink repaints and wipes the terminal's native selection
         self._state = load_state()
         self._preferred_serial = self._state.get("last_device")
-        self._apply_filter_dict(self._state.get("filters", {}))
+        # start every session with a clean filter — last session's query/level
+        # should not silently carry over (theme, presets, export dir etc. still
+        # persist). Saved filters live on only via named presets.
+        self._apply_filter_dict({})
         if self._state.get("theme"):
             try:
                 self.theme = self._state["theme"]
@@ -1659,21 +1702,28 @@ class Catflap(App):
             time.sleep(2)
 
     def _on_foreground_change(self):
-        # refresh an open package dropdown so its pinned entry tracks the device
-        box = self.query_one("#pkg", Input)
-        if box.has_focus:
-            self._update_suggest(box)
+        # surface the foreground app in the query box's dropdown once it's known
+        # (the clean replacement for the old startup package picker), and keep a
+        # package: completion in sync if one is open
+        q = self.query_one("#query", Input)
+        if q.has_focus and (not q.value or q.value.lower().startswith("package:")):
+            self._update_suggest(q)
 
     def adopt_foreground(self):
         pkg = self.foreground_pkg
         if not pkg:
             self.notify("No foreground app detected yet.", severity="warning")
             return
-        box = self.query_one("#pkg", Input)
-        if box.value.strip() == pkg:
+        # the package box is hidden — scope via the visible query box so the
+        # active filter is shown. Append package: if a query is already there.
+        box = self.query_one("#query", Input)
+        token = f"package:{pkg}"
+        existing = box.value.strip()
+        if token in existing:
             return
-        box.value = pkg
-        box.cursor_position = len(pkg)
+        box.value = f"{existing} {token}".strip() if existing else token
+        box.cursor_position = len(box.value)
+        self.set_focus(box)
 
     # ---- filtering -----------------------------------------------------------
 
@@ -2015,7 +2065,6 @@ class Catflap(App):
         self.f_pkg = parse_terms(self.query_one("#pkg", Input).value)
         self.f_query = parse_query(self.query_one("#query", Input).value)
         self._hl_patterns = highlight_patterns(self.f_query)
-        self._state["filters"] = self._current_filters()
         self._refresh_view()
 
     def _apply_filter_change(self):
@@ -2100,13 +2149,43 @@ class Catflap(App):
         if key:  # completing a scoped value — suggest that field's candidates
             cand_kind = FIELD_ALIASES[key]  # already 'tag' | 'msg' | 'pkg'
             keytext = token[: KEY_RE.match(token).end()]  # e.g. "-tag~:"
-            for v in suggest(self._candidates_for(cand_kind), partial):
-                out.append((Text(v), prefix + keytext + v))
+            values = suggest(self._candidates_for(cand_kind), partial)
+            # for package:, pin the device's foreground app on top with its
+            # label — same hint the dedicated package box gives (there is no
+            # 'mine' here, so the foreground app is the natural starting point)
+            fg = self.foreground_pkg if cand_kind == "pkg" else None
+            t = partial.strip().lower()
+            if fg and (not t or t in fg.lower()) and t != fg.lower():
+                values = ([fg] + [v for v in values if v != fg])[:8]
+            for v in values:
+                if v == fg:
+                    disp = Text.assemble("📱 ", v, ("  foreground", "dim italic"))
+                else:
+                    disp = Text(v)
+                out.append((disp, prefix + keytext + v))
             return out
         # bare term — promote to reserved forms across tag + message
         bare = partial
+        if bare == "" and not prefix and self.foreground_pkg:
+            # empty box: offer the device's foreground app as a one-click start
+            fg = self.foreground_pkg
+            return [(
+                Text.assemble("📱 ", ("package:", key_color), fg, ("  foreground", "dim italic")),
+                "package:" + fg,
+            )]
         if bare in ("", "NOT") or bare.startswith("/"):
             return []  # nothing useful to promote yet (or an inline regex)
+        # if the word is the start of a reserved key, offer to complete the key
+        # itself (so typing "package" suggests "package:" before treating it as
+        # a literal search term)
+        low = bare.lower()
+        for kw in ("tag", "message", "package"):
+            if kw.startswith(low):
+                hint = " — then pick the app" if kw == "package" else " — scope to that field"
+                out.append((
+                    Text.assemble((kw + ":", key_color), (hint, "dim italic")),
+                    prefix + kw + ":",
+                ))
         for v in suggest(self._candidates_for("tag"), bare, limit=5):
             disp = Text.assemble(("tag:", key_color), v)
             out.append((disp, prefix + "tag:" + v))
@@ -2148,13 +2227,21 @@ class Catflap(App):
             self._hide_suggest()
         if w is not self.level_menu:
             self.level_menu.display = False
-        if isinstance(w, Input) and w.id == "pkg":
+        if isinstance(w, Input) and w.id == "pkg" and not self._pkg_hidden():
             self._update_suggest(w)  # the package box drops down on focus
+        # focusing an empty query box surfaces the foreground app as a one-click
+        # start (the clean replacement for the old startup package picker)
+        if isinstance(w, Input) and w.id == "query" and not w.value and self.foreground_pkg:
+            self._update_suggest(w)
+
+    def _pkg_hidden(self):
+        return self.query_one("#wrap-pkg").styles.display == "none"
 
     def on_click(self, event):
         # reopen on click even when the box already has focus (e.g. after escape)
         w = event.widget
-        if isinstance(w, Input) and w.id == "pkg" and not self.suggest_list.display:
+        if (isinstance(w, Input) and w.id == "pkg"
+                and not self._pkg_hidden() and not self.suggest_list.display):
             self._update_suggest(w)
 
     def on_key(self, event):
@@ -2408,7 +2495,6 @@ class Catflap(App):
         chip = self.query_one("#minlevel", Static)
         chip.update(f"Level {sign} {level}")
         chip.set_class(level != "V" or self.level_exact, "levelactive")
-        self._state["filters"] = self._current_filters()
         self._refresh_view()
 
     def toggle_level_menu(self):

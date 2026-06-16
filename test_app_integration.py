@@ -122,18 +122,32 @@ class FilteringFlow(unittest.IsolatedAsyncioTestCase):
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.2)
-            app.set_focus(app.query_one("#pkg", Input))
+            # the package box is hidden and non-focusable, so Tab goes
+            # query -> minlevel (no pkg)
+            app.set_focus(app.query_one("#query", Input))
             await pilot.pause(0.05)
             order = [getattr(app.focused, "id", None)]
-            for _ in range(2):  # two tabs: pkg -> query -> minlevel
-                await pilot.press("tab")
-                await pilot.pause(0.05)
-                order.append(getattr(app.focused, "id", None))
-            self.assertEqual(order, ["pkg", "query", "minlevel"])
+            await pilot.press("tab")
+            await pilot.pause(0.05)
+            order.append(getattr(app.focused, "id", None))
+            self.assertEqual(order, ["query", "minlevel"])
             # Enter on the now-focused chip opens the level menu
             await pilot.press("enter")
             await pilot.pause(0.1)
             self.assertTrue(app.level_menu.display)
+
+    async def test_hidden_package_box_does_not_pop_dropdown(self):
+        """The package box is hidden — focusing it must not open a suggestion
+        dropdown for an invisible field."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"1": "com.fg.app"}
+            app.foreground_pkg = "com.fg.app"
+            app.set_focus(app.query_one("#pkg", Input))
+            await pilot.pause(0.2)
+            self.assertFalse(app.suggest_list.display)
 
 
 class AutocompleteFlow(unittest.IsolatedAsyncioTestCase):
@@ -174,6 +188,72 @@ class AutocompleteFlow(unittest.IsolatedAsyncioTestCase):
             await pilot.press("down", "enter")
             await pilot.pause(0.4)
             self.assertEqual(box.value, "message:foo tag:WindowManager")
+
+    async def test_package_key_pins_foreground_app(self):
+        """Typing package: in the query box suggests packages with the
+        foreground app pinned first — same hint as the dedicated package box
+        (there is no 'mine' keyword like Android Studio)."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {
+                "1": "com.foreground.app",
+                "2": "com.other.app",
+                "3": "com.background.svc",
+            }
+            app.foreground_pkg = "com.foreground.app"
+            box = app.query_one("#query")
+            app.set_focus(box)
+            box.value = "package:"
+            box.cursor_position = len(box.value)
+            await pilot.pause(0.4)
+            self.assertTrue(app._suggest_values)
+            self.assertEqual(app._suggest_values[0], "package:com.foreground.app")
+            # pkg alias works too, and narrowing still filters
+            box.value = "pkg:back"
+            box.cursor_position = len(box.value)
+            await pilot.pause(0.4)
+            self.assertEqual(app._suggest_values, ["pkg:com.background.svc"])
+
+    async def test_empty_query_focus_offers_foreground_app(self):
+        """Focusing the empty query box surfaces the foreground app as a
+        one-click 'package:<app>' start (clean replacement for the old picker)."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.pid_names = {"1": "com.foreground.app"}
+            app.foreground_pkg = "com.foreground.app"
+            box = app.query_one("#query")
+            self.assertEqual(box.value, "")
+            app.set_focus(box)
+            await pilot.pause(0.3)
+            self.assertEqual(app._suggest_values, ["package:com.foreground.app"])
+            # accepting it fills the query box (not the hidden package box)
+            app._apply_suggestion(app._suggest_values[0])
+            await pilot.pause(0.2)
+            self.assertEqual(box.value, "package:com.foreground.app")
+            self.assertEqual(app.query_one("#pkg").value, "")
+
+    async def test_typing_key_word_suggests_the_key(self):
+        """Typing a key word (no colon yet) offers to complete the key, so
+        'package' suggests 'package:' before treating it as a search term."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            box = app.query_one("#query")
+            app.set_focus(box)
+            for typed, expected_key in (("package", "package:"),
+                                        ("pack", "package:"),
+                                        ("tag", "tag:"),
+                                        ("mess", "message:")):
+                box.value = typed
+                box.cursor_position = len(typed)
+                await pilot.pause(0.4)
+                self.assertIn(expected_key, app._suggest_values,
+                              f"typing {typed!r} should suggest {expected_key}")
 
     async def test_enter_submits_query_as_typed(self):
         """Enter applies the filter immediately and dismisses the dropdown —
@@ -408,36 +488,37 @@ class PresetsAndPersistence(unittest.IsolatedAsyncioTestCase):
             app.query_one("#query").value = "message:timeout"
             await pilot.pause(0.4)
             app._state.setdefault("presets", {})["mine"] = app._current_filters()
+            catflap.save_state(app._state)
             app.query_one("#query").value = ""
             await pilot.pause(0.4)
             app._apply_filter_dict(app._state["presets"]["mine"])
             await pilot.pause(0.4)
             self.assertEqual(app.query_one("#query").value, "message:timeout")
         saved = json.loads(tmp.read_text())
-        self.assertEqual(saved["filters"]["query"], "message:timeout")
+        self.assertEqual(saved["presets"]["mine"]["query"], "message:timeout")
         self.assertEqual(saved["presets"]["mine"]["query"], "message:timeout")
 
-    async def test_filters_restored_on_launch(self):
+    async def test_filters_not_restored_on_launch(self):
+        """Each session starts with a clean filter — a saved query/level does
+        NOT carry over (only named presets persist filters)."""
         tmp = isolate_state()
         tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({"filters": {"query": "tag:AcmeSDK", "errors": True}}))
+        tmp.write_text(json.dumps({"filters": {"query": "tag:AcmeSDK", "level": "E"}}))
         app = make_app()
         async with app.run_test() as pilot:
             await pilot.pause(0.4)
-            self.assertEqual(app.query_one("#query").value, "tag:AcmeSDK")
-            # legacy "errors only" state maps onto the level selector
-            self.assertEqual(app.min_level, "E")
+            self.assertEqual(app.query_one("#query").value, "")  # fresh
+            self.assertEqual(app.min_level, "V")                  # default level
 
-    async def test_legacy_tag_msg_preset_migrates(self):
-        """Old two-box presets fold into the unified query on load."""
-        tmp = isolate_state()
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps({
-            "filters": {"tag": "AcmeSDK", "msg": "timeout"},
-        }))
+    async def test_legacy_tag_msg_preset_migrates_on_load(self):
+        """Old two-box presets fold into the unified query when the preset is
+        loaded (migration still applies via _apply_filter_dict)."""
+        isolate_state()
         app = make_app()
         async with app.run_test() as pilot:
-            await pilot.pause(0.4)
+            await pilot.pause(0.2)
+            app._apply_filter_dict({"tag": "AcmeSDK", "msg": "timeout"})
+            await pilot.pause(0.3)
             self.assertEqual(
                 app.query_one("#query").value, "tag:AcmeSDK AND message:timeout"
             )
