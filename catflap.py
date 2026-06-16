@@ -1466,7 +1466,13 @@ class Catflap(App):
             elif "theme" in low:
                 commands.append(SystemCommand(f"🎨 {cmd.title}", cmd.help, cmd.callback, cmd.discover))
             elif "screenshot" in low:
-                commands.append(SystemCommand(f"📸 {cmd.title}", cmd.help, cmd.callback, cmd.discover))
+                # Textual's built-in saves an SVG of catflap's own UI — rename it
+                # so it isn't confused with the device screenshot (ADB/Device menu)
+                commands.append(SystemCommand(
+                    "🖼  Save catflap UI snapshot (SVG)",
+                    "Save an SVG image of catflap's own terminal window (not the device screen)",
+                    cmd.callback, cmd.discover,
+                ))
             else:
                 commands.append(SystemCommand(f"⚙️ {cmd.title}", cmd.help, cmd.callback, cmd.discover))
         if quit_cmd:
