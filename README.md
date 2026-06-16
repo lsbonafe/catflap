@@ -123,6 +123,18 @@ meltdown OR /ad (loaded|failed)/ AND NOT noise
 
 Press `F1` inside the app for the full cheatsheet, including how to copy text from the terminal.
 
+## Known issues
+
+- **Mouse text selection is flaky.** Like any full-screen Textual app, catflap
+  captures the mouse and repaints continuously, so the terminal's native
+  drag-to-select (hold `Shift`/`Fn`/`Option` depending on the terminal) often
+  gets wiped by a repaint — releasing the modifier too soon makes the selection
+  vanish. Two ways around it:
+  - **Hold the modifier ~1s after finishing the drag, then release.** Letting
+    pending repaints flush while you're still holding makes the selection stick.
+  - **Use Export (`Ctrl+E`)** to write the filtered lines to a Markdown or raw
+    `.log` file — the reliable way to copy larger chunks.
+
 ## Development
 
 ```bash
