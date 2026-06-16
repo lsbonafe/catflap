@@ -21,7 +21,7 @@ from catflap import (
 def make_app():
     # fully isolate from adb: no devices -> no reader/mapper activity,
     # tests feed lines straight into app.queue
-    catflap.list_devices = lambda: []
+    catflap.adb.list_devices = lambda: []  # the app calls adb.list_devices()
     app = Catflap()
     app._auto_picked = True
     return app
