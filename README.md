@@ -15,9 +15,9 @@ The little door your Android logs come through. A terminal UI for logcat with An
 - **Severity filtering**: clickable `Level` chip (or `F2`) with a dropdown; the chip text is tinted to the selected level; switchable operator — `≥` (that level and worse) or `=` (exactly that level)
 - **Search the scrollback** (`/`): jump to matches across the whole buffer, not just what's on screen; `n`/`N` step between hits, same plain-text or `/regex/` syntax as the filters
 - **Crash spotlight**: FATAL EXCEPTIONs trigger a toast and a persistent 💥 indicator; `Ctrl+G` opens the full stack trace in a modal (with the package resolved from the crash itself), regardless of active filters
-- **Device menu** (`Ctrl+D`): switch the streaming device (AVD names for emulators, auto-reconnect), install an APK via a native file picker, mirror the screen with [scrcpy](https://github.com/Genymobile/scrcpy), or grab a **screenshot / screen recording** (`Ctrl+R` toggles recording)
+- **Device menu** (`Ctrl+D`): switch the streaming device (AVD names for emulators, auto-reconnect), install an APK via a native file picker, mirror the screen with [scrcpy](https://github.com/Genymobile/scrcpy), or grab a **screenshot (`F4`) / screen recording (`F3` toggles)**
 - **Log buffer selection** (`Ctrl+B`): stream `crash`, `events`, `radio`, or everything instead of the default `main`+`system`
-- **ADB operations menu** (`Ctrl+A`): start/restart/kill the target app, simulate process death, clear data, uninstall, grant/revoke permissions, open deep links, screenshot, screen record
+- **ADB operations menu** (`Ctrl+A`): start/restart/kill the target app, simulate process death, clear data, uninstall, grant/revoke permissions, open deep links
 - **Pause/resume** (`Ctrl+S`): freeze the view to read or select text; the buffer keeps filling and renders on resume
 - **Exports** (`Ctrl+E`): Markdown table (`Time · Level · Package · Tag · Message`, crashes marked 💥) or raw `.log`, respecting active filters, to a configurable folder
 - **Filter presets** (save/load named filters) — each session otherwise starts with a clean filter; theme, device, buffer, wrap and export folder persist
@@ -103,7 +103,8 @@ Code and Cursor can install it to pull filtered logs in one call). Run
 | `Ctrl+D` | Device menu (switch device, install APK, mirror, screenshot/record) |
 | `Ctrl+B` | Switch log buffer |
 | `Ctrl+A` | ADB operations menu |
-| `Ctrl+R` | Start / stop screen recording |
+| `F3` | Start / stop screen recording |
+| `F4` | Device screenshot |
 | `Ctrl+E` | Export (Markdown / raw log) |
 | `/` | Search the scrollback (`n`/`N` to step) |
 | `F1` | Filtering cheatsheet |
@@ -145,7 +146,7 @@ Press `F1` inside the app for the full cheatsheet, including how to copy text fr
 ## Development
 
 ```bash
-.venv/bin/python -m unittest discover    # 161 tests: unit + headless UI integration
+.venv/bin/python -m unittest discover    # 165 tests: unit + headless UI integration
 ```
 
 State is persisted at `~/.config/catflap/state.json` (palette → "Restore factory defaults" wipes it).

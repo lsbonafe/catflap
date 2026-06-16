@@ -1348,20 +1348,23 @@ class Catflap(App):
         Binding("ctrl+a", "adb_menu", "ADB", priority=True),
         Binding("f1", "help", "Filtering", show=False, priority=True),
         Binding("f2", "level_menu", "Level", show=False, priority=True),
-        Binding("ctrl+r", "toggle_record", "Record", show=False, priority=True),
+        # F3/F4, not Ctrl+R: terminals/shells often grab Ctrl+R for reverse-search
+        # so it never reaches the app — F-keys fit F1/F2 and aren't intercepted
+        Binding("f3", "toggle_record", "Record", show=False, priority=True),
+        Binding("f4", "device_screenshot", "Screenshot", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
     def get_system_commands(self, screen):
         commands = [
             SystemCommand(
-                "❓ Filtering help",
-                "Cheatsheet: AND/OR/NOT operators and /regex/ syntax (also: F1)",
+                "❓ Filtering help (F1)",
+                "Cheatsheet: AND/OR/NOT operators and /regex/ syntax",
                 self.action_help,
             ),
             # device
             SystemCommand(
-                "📱 Switch device",
+                "📱 Switch device (^d)",
                 "Pick which connected device to stream logcat from",
                 self.action_pick_device,
             ),
@@ -1381,7 +1384,17 @@ class Catflap(App):
                 self._mirror_screen,
             ),
             SystemCommand(
-                "📚 Switch log buffer",
+                "📸 Device screenshot (F4)",
+                "Capture the device screen (PNG) to the export folder",
+                self.action_device_screenshot,
+            ),
+            SystemCommand(
+                "🎬 Device screen record (F3)",
+                "Start, or stop & save, a recording of the device screen",
+                self.action_toggle_record,
+            ),
+            SystemCommand(
+                "📚 Switch log buffer (^b)",
                 "Stream crash, events, radio, or the default main+system buffers",
                 self.action_pick_buffer,
             ),
@@ -1391,29 +1404,29 @@ class Catflap(App):
                 self.adopt_foreground,
             ),
             SystemCommand(
-                "🤖 ADB operations",
+                "🤖 ADB operations (^a)",
                 "Start/kill/clear/uninstall the target app, permissions, deep links, screenshots",
                 self.action_adb_menu,
             ),
             SystemCommand(
-                "🎚 Set minimum level",
-                "Open the level menu: V/D/I/W/E threshold or exact mode (also: F2)",
+                "🎚 Set minimum level (F2)",
+                "Open the level menu: V/D/I/W/E threshold or exact mode",
                 self.action_level_menu,
             ),
             # debugging
             SystemCommand(
-                "💥 Jump to last crash",
+                "💥 Jump to last crash (^g)",
                 "Open the most recent FATAL EXCEPTION with its stack trace",
                 self.action_jump_crash,
             ),
             SystemCommand(
-                "🔍 Search displayed lines",
-                "Find and jump to matches in the filtered scrollback (also: /)",
+                "🔍 Search displayed lines (/)",
+                "Find and jump to matches in the filtered scrollback",
                 self.action_search,
             ),
             # exports
             SystemCommand(
-                "📤 Export as Markdown",
+                "📤 Export as Markdown (^e)",
                 "Save the currently filtered lines as a Markdown table",
                 self.action_export_md,
             ),
@@ -1980,8 +1993,8 @@ class Catflap(App):
                     "🔄 Switch streaming device",
                     "📦 Install APK…",
                     "🖥  Mirror screen (scrcpy)",
-                    "📸 Screenshot",
-                    "⏹ Stop recording & save" if recording else "🎬 Start screen record",
+                    "📸 Screenshot (F4)",
+                    "⏹ Stop recording & save (F3)" if recording else "🎬 Start screen record (F3)",
                 ],
             ),
             done,
@@ -2727,7 +2740,6 @@ class Catflap(App):
             "🔒 Revoke permission…",
             "♻️ Reset all permissions (all apps)",
             "🔗 Open deep link…",
-            "📸 Screenshot",
             "⏹ Stop recording & save" if recording else "🎬 Start screen record",
         ]
         self.push_screen(PickListScreen(f"ADB — {pkg}", ops), self._run_adb_op)
@@ -2781,8 +2793,6 @@ class Catflap(App):
             self.push_screen(
                 TextPromptScreen("Deep link URL", self._last_deeplink, "scheme://host/path"), done
             )
-        elif choice == "📸 Screenshot":
-            self._export_dir_or_prompt(self._take_screenshot)
         elif choice == "🎬 Start screen record":
             self._start_recording()
         elif choice.startswith("⏹"):
@@ -2844,8 +2854,15 @@ class Catflap(App):
             self._rec_timer = None
         self.query_one("#recbar", RecBar).display = False
 
+    def action_device_screenshot(self):
+        """F4 — capture the device screen (PNG) to the export folder."""
+        if self.serial is None:
+            self.notify("No devices connected.", severity="warning")
+            return
+        self._export_dir_or_prompt(self._take_screenshot)
+
     def action_toggle_record(self):
-        """Ctrl+R — start a recording, or stop & save the one in progress."""
+        """F3 — start a recording, or stop & save the one in progress."""
         if self.serial is None:
             self.notify("No devices connected.", severity="warning")
             return

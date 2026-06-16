@@ -749,7 +749,7 @@ class AdbMenuFlow(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any("Start screen record" in o for o in opts))
             await pilot.press("escape")
 
-    async def test_ctrl_r_toggles_recording_and_recbar(self):
+    async def test_f3_toggles_recording_and_recbar(self):
         from unittest.mock import patch, MagicMock
         import tempfile
         tmp = isolate_state()
@@ -765,17 +765,31 @@ class AdbMenuFlow(unittest.IsolatedAsyncioTestCase):
             recbar = app.query_one("#recbar")
             self.assertFalse(recbar.display)
             with patch("catflap.subprocess.Popen", return_value=proc):
-                await pilot.press("ctrl+r")  # start
+                await pilot.press("f3")  # start
                 await pilot.pause(0.2)
             self.assertIsNotNone(app._record_proc)
             self.assertTrue(recbar.display)  # the REC bar is shown
             self.assertIn("REC", str(recbar.render()))
             # stop: clears the handle and hides the bar
             with patch("catflap.subprocess.run", return_value=MagicMock(returncode=0)):
-                await pilot.press("ctrl+r")
+                await pilot.press("f3")
                 await pilot.pause(0.3)
             self.assertIsNone(app._record_proc)
             self.assertFalse(recbar.display)
+
+    async def test_f4_takes_device_screenshot(self):
+        from unittest.mock import patch
+        import tempfile
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.serial = "FAKE"
+            app._state["export_dir"] = tempfile.mkdtemp()
+            with patch.object(type(app), "_take_screenshot") as shot:
+                await pilot.press("f4")
+                await pilot.pause(0.2)
+                self.assertTrue(shot.called)
 
 
 class Screens(unittest.IsolatedAsyncioTestCase):
