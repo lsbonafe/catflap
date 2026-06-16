@@ -21,7 +21,7 @@ from catflap import (
 def make_app():
     # fully isolate from adb: no devices -> no reader/mapper activity,
     # tests feed lines straight into app.queue
-    catflap.list_devices = lambda: []
+    catflap.adb.list_devices = lambda: []  # the app calls adb.list_devices()
     app = Catflap()
     app._auto_picked = True
     return app
@@ -29,7 +29,7 @@ def make_app():
 
 def isolate_state():
     tmp = Path(tempfile.mkdtemp()) / "state.json"
-    catflap.STATE_PATH = tmp
+    catflap.state.STATE_PATH = tmp  # load_state/save_state read it from the module
     return tmp
 
 

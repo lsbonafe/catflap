@@ -25,7 +25,8 @@ Homepage = "https://github.com/lsbonafe/catflap"
 Issues = "https://github.com/lsbonafe/catflap/issues"
 
 [project.scripts]
-catflap = "catflap:main"
+catflap = "catflap.cli:main"
 
 [tool.setuptools]
-py-modules = ["catflap"]
+packages = ["catflap"]
+py-modules = []

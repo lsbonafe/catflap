@@ -719,7 +719,7 @@ class ParseForegroundTest(unittest.TestCase):
 
 class PickDumpSerialTest(unittest.TestCase):
     def _with_devices(self, devices):
-        return patch.object(catflap, "list_devices", return_value=devices)
+        return patch.object(catflap.adb, "list_devices", return_value=devices)
 
     def test_no_devices(self):
         with self._with_devices([]):
