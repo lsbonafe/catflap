@@ -40,7 +40,7 @@ from catflap.filtering import (
 )
 from catflap.state import load_state, save_state
 from catflap.widgets import (
-    HELP_TEXT, LEVEL_LABELS, FOOTER_ORDER,
+    HELP_TEXT, LEVEL_LABELS, FOOTER_ORDER, FilterInput,
     ClearButton, DropdownArrow, ClosableCommandPalette, QueryHighlighter,
     HelpScreen, TextViewerScreen, PickListScreen, ExportDirScreen,
     FilterPickScreen, TextPromptScreen, SavePresetScreen, LogPane, OrderedFooter,
@@ -346,13 +346,13 @@ class Catflap(App):
                 # hidden box — non-focusable from the start so Textual's
                 # auto-focus never lands on it and pops a dropdown for an
                 # invisible field (see #wrap-pkg display:none in the CSS)
-                pkg = Input(placeholder="package", id="pkg")
+                pkg = FilterInput(placeholder="package", id="pkg")
                 pkg.can_focus = False
                 yield pkg
                 yield ClearButton("pkg", id="clear-pkg")
                 yield DropdownArrow(id="pkg-arrow")
             with Horizontal(classes="inputwrap", id="wrap-query"):
-                yield Input(placeholder="package:  tag:  message:  /regex/  — or just type", id="query")
+                yield FilterInput(placeholder="package:  tag:  message:  /regex/  — or just type", id="query")
                 yield ClearButton("query", id="clear-query")
             yield LevelChip("Level ≥ V", id="minlevel")
         yield LogPane(highlight=False, markup=False, wrap=False, max_lines=DISPLAY_MAX, id="log")
@@ -361,7 +361,7 @@ class Catflap(App):
             yield Static("🐈 𝒸𝒶𝓉𝒻𝓁𝒶𝓅", id="brand")
         with Horizontal(id="searchrow"):
             yield Static("/", id="search-slash")
-            yield Input(placeholder="search — enter: jump · n/N: older/newer · esc: close", id="searchbar")
+            yield FilterInput(placeholder="search — enter: jump · n/N: older/newer · esc: close", id="searchbar")
             yield Static("", id="search-count")
         yield OrderedFooter()
         yield OptionList(id="suggest")

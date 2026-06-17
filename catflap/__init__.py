@@ -38,7 +38,7 @@ from catflap.adb import (  # noqa: F401
 
 # --- widgets / screens ---
 from catflap.widgets import (  # noqa: F401
-    HELP_TEXT, LEVEL_LABELS, FOOTER_ORDER,
+    HELP_TEXT, LEVEL_LABELS, FOOTER_ORDER, FilterInput,
     ClearButton, DropdownArrow, PaletteClose, ClosableCommandPalette,
     QueryHighlighter, CloseButton, OutsideClickDismiss, HelpScreen,
     TextViewerScreen, PickListScreen, ExportDirScreen, FilterPickScreen,

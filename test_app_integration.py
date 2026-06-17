@@ -78,6 +78,29 @@ class FilteringFlow(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(clear.display)
             self.assertIs(app.focused, box)
 
+    async def test_word_delete_keys_in_filter_box(self):
+        """Delete-previous-word works via every convention: ⌥+Backspace (macOS),
+        Ctrl+Backspace (Linux/Windows), and Ctrl+W (universal)."""
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            box = app.query_one("#query")
+            app.set_focus(box)
+            for key, expected in (
+                ("alt+backspace", "hello world "),
+                ("ctrl+backspace", "hello "),
+                ("ctrl+w", ""),
+            ):
+                box.value = ""
+                await pilot.press(*list("hello world foo"))
+                await pilot.pause(0.1)
+                await pilot.press(key)
+                await pilot.pause(0.1)
+                # each key deletes one trailing word; check the first deletion
+                self.assertTrue(box.value.startswith("hello"))
+                self.assertNotIn("foo", box.value)
+
     async def test_inputs_have_query_highlighter(self):
         isolate_state()
         app = make_app()

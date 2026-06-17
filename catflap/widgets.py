@@ -13,6 +13,24 @@ from textual.widgets._footer import FooterKey
 from textual.widgets.option_list import Option
 
 
+class FilterInput(Input):
+    """Input with delete-the-previous-word bound to the platform conventions.
+
+    Textual only ships ctrl+w for that, and maps ctrl+backspace to the *wrong*
+    direction (delete_right_word). Bind both conventions to delete-left-word:
+      • macOS:        ⌥+Backspace  (arrives as alt+backspace / ctrl+alt+h)
+      • Linux/Win:    Ctrl+Backspace
+    ⌥+arrows already jump words because the terminal maps them onto ctrl+arrow.
+    Whether a terminal sends a distinct alt/ctrl+backspace varies; ctrl+w is the
+    universal fallback."""
+
+    BINDINGS = [
+        Binding("alt+backspace", "delete_left_word", show=False),
+        Binding("ctrl+alt+h", "delete_left_word", show=False),  # some terminals
+        Binding("ctrl+backspace", "delete_left_word", show=False),  # Linux/Windows
+    ]
+
+
 HELP_TEXT = r"""[b u $accent]Plain terms[/] — the query box
 
   [b]droid[/]                      a bare word matches the [b]tag[/] OR the [b]message[/]
