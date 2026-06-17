@@ -27,19 +27,15 @@ keyboard-driven TUI. No other terminal tool combines them.
 <sub>✅ full · ⚠️ partial/qualified · ❌ absent · — undocumented. Snapshot June 2026; verify per project.</sub>
 <sub>¹ Has process↔name correlation but no documented logcat PID→package resolution. ² Repo README/config show contains-match only. ³ Aya lists "logcat viewer" with no filtering depth documented.</sub>
 
-**Where catflap stands out:** it's the only **terminal** tool that combines boolean +
-field-scoped filtering (`tag:Ads AND -message:fill`), PID→package resolution that survives
-process death, broad ADB actions, **live scrcpy mirror**, and a headless `dump` with real
-filter syntax + a SKILL.md. Boolean AND/OR/NOT with field keys is unmatched across the
-verified terminal tools (rogcat has `!` negation only). Live mirror + logcat together exists
-elsewhere only in Aya (a GUI).
+### Where catflap shines
 
-**Where others go further — honestly:** for *agent integration*, [adb-tui](https://github.com/alanisme/adb-tui)
-and [FadCat](https://github.com/anonfaded/fadcat) expose full **MCP servers** (JSON-RPC,
-120+ tools); catflap's headless story is a one-shot `dump`, not a live MCP surface. They
-also ship broader raw ADB (push/pull, port-forward, file/app management). And
-[pidcat](https://github.com/JakeWharton/pidcat) still does the cleanest single-package PID
-tracking if that's all you need.
+If you live in the terminal and want **Android-Studio-grade filtering** (boolean + field
+keys + regex + highlighting) plus **device control** (ADB actions, scrcpy mirror,
+screenshot/record) in one keyboard-driven tool, nothing else here comes close.
+
+And it's **AI-agent-ready out of the box** — `catflap dump --format jsonl` plus the bundled
+[SKILL.md](SKILL.md) let an agent pull filtered logs with the full boolean/regex syntax in a
+single call, no extra setup.
 
 ## Features
 
