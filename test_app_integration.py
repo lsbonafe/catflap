@@ -777,6 +777,32 @@ class AdbMenuFlow(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app._record_proc)
             self.assertFalse(recbar.display)
 
+    async def test_recording_aborts_when_screenrecord_exits_early(self):
+        """A locked screen makes screenrecord exit immediately — abort without
+        claiming the 3-min limit or saving a non-existent file."""
+        from unittest.mock import patch, MagicMock
+        import time
+        isolate_state()
+        app = make_app()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.2)
+            app.serial = "FAKE"
+            notes = []
+            app.notify = lambda m, *a, **k: notes.append(str(m)) or None
+            proc = MagicMock()
+            proc.poll.return_value = 1  # exited immediately, non-zero
+            with patch("catflap.subprocess.Popen", return_value=proc):
+                app._start_recording()
+                await pilot.pause(0.1)
+                app._record_start = time.monotonic() - 1  # 1s in, far below limit
+                with patch("catflap.subprocess.run", return_value=MagicMock()):
+                    app._tick_recbar()
+                    await pilot.pause(0.2)
+            self.assertIsNone(app._record_proc)                 # aborted
+            self.assertFalse(app.query_one("#recbar").display)  # bar hidden
+            self.assertTrue(any("locked" in n for n in notes))  # right message
+            self.assertFalse(any("3 min" in n for n in notes))  # not the limit lie
+
     async def test_f4_takes_device_screenshot(self):
         from unittest.mock import patch
         import tempfile

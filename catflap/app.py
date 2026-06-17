@@ -1604,8 +1604,19 @@ class Catflap(App):
         if self._record_proc is None:
             return
         elapsed = int(time.monotonic() - self._record_start)
+        rc = self._record_proc.poll()
+        if rc is not None and elapsed < self.REC_LIMIT - 1:
+            # screenrecord exited early — almost always an error (screen locked,
+            # secure/DRM surface, adb dropped). Don't claim success or pull a
+            # file that was never written; abandon the recording.
+            self._abort_recording()
+            self.notify(
+                "Recording stopped early — is the screen locked? (no file saved)",
+                severity="warning",
+            )
+            return
         # the device auto-stops at the limit — finalise & save when it does
-        if elapsed >= self.REC_LIMIT or self._record_proc.poll() is not None:
+        if elapsed >= self.REC_LIMIT or rc is not None:
             self.notify("Recording reached the 3 min limit — saving.")
             self._export_dir_or_prompt(self._stop_recording)
             return
@@ -1630,6 +1641,30 @@ class Catflap(App):
             self._rec_timer.stop()
             self._rec_timer = None
         self.query_one("#recbar", RecBar).display = False
+
+    def _abort_recording(self):
+        """Recording failed/exited early — drop it without saving and tidy the
+        (possibly empty) device file in the background."""
+        proc, self._record_proc = self._record_proc, None
+        self._hide_recbar()
+        serial = self.serial
+        if proc is None or serial is None:
+            return
+
+        def work():
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            try:
+                subprocess.run(
+                    ["adb", "-s", serial, "shell", "rm", "-f", "/sdcard/catflap_rec.mp4"],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
 
     def action_device_screenshot(self):
         """F4 — capture the device screen (PNG) to the export folder."""
