@@ -6,6 +6,41 @@ The little door your Android logs come through. A terminal UI for logcat with An
 
 ![catflap screenshot](docs/screenshot.svg)
 
+## How it compares
+
+catflap's niche is the **terminal**: live boolean + field-scoped filtering with
+PID→package resolution, ADB device actions, and live screen mirroring — in one
+keyboard-driven TUI. No other terminal tool combines them.
+
+| Tool | UI | Filtering | PID resolution | ADB actions | Screen mirror | Headless/agent | Maintained |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **catflap** | TUI | ✅ `tag:`/`message:`/`package:` keys + `AND`/`OR`/`NOT` + regex + negate | ✅ survives process death | ✅ install, clear, perms, deep links, screenshot/record | ✅ scrcpy | ✅ `dump` text/JSONL + SKILL.md | ✅ 2026 |
+| [DroidTUI](https://github.com/sorinirimies/droidtui) | TUI + JSONL | ⚠️ regex, exclude, tag/PID/level — no boolean | ❌ PID-number filter only | ⚠️ 40+ typed cmds (no mirror) | ❌ | ✅ `--query` JSONL (no SKILL.md) | ✅ 2026 |
+| [adb-tui](https://github.com/alanisme/adb-tui) | TUI + CLI + MCP | ⚠️ level/tag/search — no boolean/regex | ⚠️ process↔name, not logcat¹ | ✅ install, shell, push/pull, screenshot/record | ❌ capture only | ✅ MCP (120+ tools, JSON-RPC) | ✅ 2026 |
+| [FadCat](https://github.com/anonfaded/fadcat) | GUI + CLI + MCP | ⚠️ regex, fuzzy, grep — no boolean | ⚠️ package picker, not formal¹ | ✅ bundled adb, multi-device | ❌ roadmap only | ✅ MCP (FastMCP stdio) | ✅ 2026 |
+| [lazylogcat](https://github.com/parfenovvs/lazylogcat) | TUI + web UI | ❌ per-field contains² — no regex/boolean | — | ❌ log viewing only | ❌ | ⚠️ agent skill, **no** dump/JSON | ✅ 2026 |
+| [rogcat](https://github.com/flxo/rogcat) | pipe | ⚠️ regex on tag/PID/msg + `!` negate — no AND/OR | ❌ | ⚠️ devices, clear, bugreport | ❌ | ✅ JSON/CSV/raw stdout | ✅ 2025 |
+| [purr](https://github.com/google/purr) | TUI (fzf) | ⚠️ fuzzy + tag/severity — no boolean/regex | ❌ | ✅ shell, wipe, bugreport | ❌ | ❌ | ✅ 2026 |
+| [pidcat](https://github.com/JakeWharton/pidcat) | pipe | ❌ package/tag only | ✅ tracks PID across deploys | ❌ | ❌ | ❌ | ❌ 2022 |
+| [Aya](https://github.com/liriliri/aya) | GUI (Electron) | ⚠️ viewer³ — depth undocumented | ❌ | ✅ file/app/process mgmt | ✅ screen mirror | ❌ | ✅ 2025 |
+
+<sub>✅ full · ⚠️ partial/qualified · ❌ absent · — undocumented. Snapshot June 2026; verify per project.</sub>
+<sub>¹ Has process↔name correlation but no documented logcat PID→package resolution. ² Repo README/config show contains-match only. ³ Aya lists "logcat viewer" with no filtering depth documented.</sub>
+
+**Where catflap stands out:** it's the only **terminal** tool that combines boolean +
+field-scoped filtering (`tag:Ads AND -message:fill`), PID→package resolution that survives
+process death, broad ADB actions, **live scrcpy mirror**, and a headless `dump` with real
+filter syntax + a SKILL.md. Boolean AND/OR/NOT with field keys is unmatched across the
+verified terminal tools (rogcat has `!` negation only). Live mirror + logcat together exists
+elsewhere only in Aya (a GUI).
+
+**Where others go further — honestly:** for *agent integration*, [adb-tui](https://github.com/alanisme/adb-tui)
+and [FadCat](https://github.com/anonfaded/fadcat) expose full **MCP servers** (JSON-RPC,
+120+ tools); catflap's headless story is a one-shot `dump`, not a live MCP surface. They
+also ship broader raw ADB (push/pull, port-forward, file/app management). And
+[pidcat](https://github.com/JakeWharton/pidcat) still does the cleanest single-package PID
+tracking if that's all you need.
+
 ## Features
 
 - **One unified query box, Android Studio–style**: scope a term to a field with `tag:`, `message:` or `package:`; add `=:` (exact), `~:` (regex), or a leading `-` to negate (`-tag:gc`). A bare word with no key matches the **tag OR the message**. Live autocomplete draws from the actual stream (process names, tags, frequent messages); typing `package:` pins the **foreground app** on top.
@@ -24,23 +59,6 @@ The little door your Android logs come through. A terminal UI for logcat with An
 - **Theme-aware**: all colors (log levels, operators, match highlights, indicators) derive from the active Textual theme — switch via the command palette
 - Pid→package mapping that survives process death, so crash lines stay attributed and filterable
 - **Headless mode for scripts & AI agents** (`catflap dump`): the same boolean/regex filtering piped to stdout (text or JSONL), no TUI — ships a [SKILL.md](SKILL.md) so coding agents can pull filtered logs in one call
-
-## How it compares
-
-catflap's niche is the **terminal**: live boolean filtering with package/PID resolution, ADB device actions, and screen mirroring — in one keyboard-driven TUI. No other terminal tool combines them.
-
-| Tool | UI | Boolean filters | PID resolution | ADB actions | Screen mirror | Maintained |
-| --- | --- | --- | --- | --- | --- | --- |
-| **catflap** | TUI | ✅ `tag:`/`message:`/`package:` keys + `AND`/`OR`/`NOT` + regex | ✅ | ✅ install, clear, perms, deep links, screenshot/record | ✅ scrcpy | ✅ |
-| [pidcat](https://github.com/JakeWharton/pidcat) | pipe | ❌ | ✅ | ❌ | ❌ | ❌ (2022) |
-| [lazylogcat](https://github.com/parfenovvs/lazylogcat) | TUI | ❌ per-field, regex | — | ❌ | ❌ | ✅ (2026) |
-| [purr](https://github.com/google/purr) | TUI (fzf) | ❌ fuzzy | ❌ | ✅ shell, wipe, bugreport | ❌ | ⚠️ (2023) |
-| [rogcat](https://github.com/flxo/rogcat) | pipe | ❌ regex ±negate | ❌ | ⚠️ devices, clear, bugreport | ❌ | ✅ (2024) |
-| `adb logcat` | pipe | ❌ tag\:level, 1 regex | ⚠️ manual `--pid` | n/a | ❌ | ✅ |
-
-<sub>— = not documented / unconfirmed. Snapshot June 2026; check each project for current state.</sub>
-
-**Agent/headless CLI:** catflap and lazylogcat both ship a non-interactive `dump` command with a SKILL.md for AI agents. catflap's exposes its full boolean/regex filter syntax (`--message "timeout OR /anr/"`); lazylogcat's is contains-match only. The others are interactive- or pipe-only.
 
 ## Requirements
 
