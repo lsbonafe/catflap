@@ -1,4 +1,4 @@
-# catflap 🐈🚪
+# 🐈 catflap
 
 The little door your Android logs come through. A terminal UI for logcat with Android Studio-grade filtering — live, fast, and keyboard-friendly. Built with [Textual](https://textual.textualize.io/).
 
